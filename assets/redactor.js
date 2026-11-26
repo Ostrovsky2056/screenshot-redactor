@@ -307,10 +307,11 @@
 
   function paintAvatars(target, image, regions) {
     for (const region of regions) {
-      const { x, y, width, height, clipped, speaker } = region;
+      const { x, y, width, height, clipped, speaker, quoteSender } = region;
       const slot = clipped ? width : Math.min(width, height);
-      const side = Math.max(1, slot - (clipped ? 0 : 2 * Math.min(4, Math.floor(slot * .07))));
-      const left = x + (width - side) / 2;
+      const inset = clipped ? 0 : Math.min(4, Math.floor(slot * .07));
+      const side = Math.max(1, slot - 2 * inset);
+      const left = quoteSender ? x + width - side - inset : x + (width - side) / 2;
       const top = clipped ? (y < image.height / 2 ? y + height - side : y) : y + (height - side) / 2;
       target.save();
       target.beginPath();
@@ -730,7 +731,7 @@
 
   function replacementBackground(image, region) {
     if (!backgroundColors.has(region)) backgroundColors.set(region, sampleBackground(image, region));
-    return backgroundColors.get(region) || (region.type === "avatar" ? null : maskColor);
+    return backgroundColors.get(region) || (region.type === "avatar" || region.quoteSender ? null : maskColor);
   }
 
   function eraseRegion(target, { x, y, width, height }, background) {
@@ -767,11 +768,12 @@
         }
         target.strokeRect(x, y, w, h);
       } else if (enabled !== false) {
-        const avatar = settings.speakers && region.type === "avatar" && region.speaker !== undefined;
-        if (avatar || (settings.hideNicknames && region.avatarNickname)) {
+        const replaceWithAvatar = settings.speakers && region.speaker !== undefined &&
+          (region.type === "avatar" || region.quoteSender);
+        if (replaceWithAvatar || (settings.hideNicknames && region.avatarNickname)) {
           eraseRegion(target, region, replacementBackground(image, region));
           removed.push(region);
-          if (avatar) avatars.push(region);
+          if (replaceWithAvatar) avatars.push(region);
         } else {
           regularMasks.push(region);
         }
@@ -955,7 +957,7 @@
 
   function detections(lines, visual, inlineNames, image, sample) {
     const regions = SensitiveText.findRegions(lines, image, sample);
-    function add(box, type, margin, { enabled = true, pending = false, avatarNickname = false } = {}) {
+    function add(box, type, margin, { enabled = true, pending = false, avatarNickname = false, quoteSender = false } = {}) {
       const region = SensitiveText.scaleBox(box, type, image, sample, margin);
       if (!region) return;
       const speaker = visual.speakerIds.get(box);
@@ -964,16 +966,22 @@
       if (existing) {
         if (existing.type === type) {
           if (speaker !== undefined) existing.speaker ??= speaker;
-          if (avatarNickname && similar(existing, region)) existing.avatarNickname = true;
+          if (similar(existing, region)) {
+            if (avatarNickname) existing.avatarNickname = true;
+            if (quoteSender) existing.quoteSender = true;
+          }
         }
         return;
       }
-      regions.push({ ...region, enabled, speaker, pending, avatarNickname, clipped: !!box.clipped });
+      regions.push({ ...region, enabled, speaker, pending, avatarNickname, quoteSender, clipped: !!box.clipped });
     }
     if (visual.groupTitle) add(visual.groupTitle, "name", 0);
     for (const box of visual.avatars) add(box, "avatar", box.clipped ? 0 : 4);
     const quoteSenders = new Set(visual.quoteSenders.map(({ box }) => box));
-    for (const box of visual.associatedNames) add(box, "name", 2, { avatarNickname: !quoteSenders.has(box) });
+    for (const box of visual.associatedNames) {
+      const quoteSender = quoteSenders.has(box);
+      add(box, "name", 2, { avatarNickname: !quoteSender, quoteSender });
+    }
     for (const { box, pending } of inlineNames) add(box, "name", 0, { enabled: !pending, pending });
     const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
     const nicknames = visual.profiles.map(profile => profile.name).filter(name => name?.line);
@@ -1135,8 +1143,8 @@
         if (next.length !== previous.length || next.some((region, index) => {
           const before = previous[index];
           return region.enabled !== before.enabled || region.type !== before.type || region.speaker !== before.speaker ||
-            region.pending !== before.pending || region.avatarNickname !== before.avatarNickname || region.clipped !== before.clipped ||
-            !similar(region, before);
+            region.pending !== before.pending || region.avatarNickname !== before.avatarNickname ||
+            region.quoteSender !== before.quoteSender || region.clipped !== before.clipped || !similar(region, before);
         })) {
           history.push(next);
           redraw();
