@@ -3,14 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-  <meta name="description" content="Cover private details in a screenshot and export a PNG. Processing happens on your device." data-zh-cn-content="框选遮挡截图里的敏感信息并导出 PNG，图片在你的浏览器本地处理。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="Automatically find avatars and private text in screenshots. Review the boxes and export a redacted PNG on your device." data-zh-cn-content="在浏览器本地识别截图里的头像和敏感文字，核对框选后导出脱敏 PNG。">
   <meta name="theme-color" content="#f4f1e9">
   <title data-zh-cn="截图脱敏 · AI 创作实验室">Screenshot Redactor · AI Creation Lab</title>
   <link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
-  <link rel="stylesheet" href="assets/site.css">
+  <link rel="stylesheet" href="assets/site.css?v=2">
   <script src="assets/i18n.js" defer></script>
-  <script src="assets/redactor.js" defer></script>
+  <script src="assets/ocr/tesseract.min.js" defer></script>
+  <script src="assets/sensitive-text.js?v=2" defer></script>
+  <script src="assets/visual-scan.js?v=3" defer></script>
+  <script src="assets/redactor.js?v=3" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main" data-zh-cn="跳到工具">Skip to the tool</a>
@@ -45,22 +48,40 @@
           <span data-zh-cn="截图">Screenshot</span>
           <span class="title-block" data-zh-cn="脱敏">Redactor</span>
         </h1>
-        <p data-zh-cn="用实色遮住敏感信息，再导出 PNG。">Cover private details with solid blocks and export a PNG.</p>
+        <p data-zh-cn="自动框选头像和敏感文字，核对后导出 PNG。">Find avatars and sensitive text, review the boxes, then export a PNG.</p>
       </div>
       <div class="privacy">
-        <strong data-zh-cn="本地处理">On-device processing</strong>
-        <p data-zh-cn="图片只在当前浏览器里处理。">Your image stays in this browser.</p>
+        <strong data-zh-cn="本地识别">On-device analysis</strong>
+        <p data-zh-cn="识别和导出都在当前浏览器完成。">Recognition and export stay in this browser.</p>
       </div>
     </section>
 
     <section class="editor" aria-label="Screenshot editor" data-zh-cn-aria-label="截图编辑器">
       <div class="toolbar" id="toolbar" hidden>
-        <button class="quiet" type="button" id="replace" data-zh-cn="更换截图">Replace image</button>
+        <div class="actions">
+          <button class="quiet" type="button" id="replace" data-zh-cn="更换截图">Replace image</button>
+          <button class="quiet" type="button" id="scan" disabled data-zh-cn="重新识别">Scan again</button>
+        </div>
         <div class="actions">
           <button class="quiet" type="button" id="undo" disabled data-zh-cn="撤销">Undo</button>
           <button class="quiet" type="button" id="clear" disabled data-zh-cn="清空遮挡">Clear masks</button>
           <button class="primary" type="button" id="save" disabled data-zh-cn="导出 PNG">Export PNG</button>
         </div>
+      </div>
+      <div class="style-bar" id="style-bar" hidden>
+        <label for="mask-style">
+          <span data-zh-cn="遮挡样式">Mask style</span>
+          <select id="mask-style">
+            <option value="ink" data-zh-cn="墨黑">Ink black</option>
+            <option value="paper" data-zh-cn="纸白">Paper white</option>
+            <option value="pixels" data-zh-cn="像素纹理">Pixel pattern</option>
+          </select>
+        </label>
+        <button type="button" class="quiet" id="mask-preview" aria-pressed="false" data-zh-cn="预览遮挡">Preview masks</button>
+      </div>
+      <div class="editor-status" id="editor-status" hidden>
+        <p id="feedback" role="status" aria-atomic="true"></p>
+        <p class="dimensions" id="dimensions"></p>
       </div>
       <div class="workspace" id="workspace">
         <div class="import-panel" id="import-panel">
@@ -70,11 +91,7 @@
           <p class="formats">PNG · JPEG · WebP</p>
           <noscript><p>Enable JavaScript to edit images in your browser. 请启用 JavaScript 以在浏览器中编辑图片。</p></noscript>
         </div>
-        <canvas id="preview" class="preview" hidden role="img" aria-label="Screenshot preview. Drag to cover a region." data-zh-cn-aria-label="截图预览。拖动可遮挡区域。"></canvas>
-      </div>
-      <div class="editor-status" id="editor-status" hidden>
-        <p id="feedback" role="status" aria-atomic="true"></p>
-        <p class="dimensions" id="dimensions"></p>
+        <canvas id="preview" class="preview" hidden role="img" aria-label="Screenshot preview. Click detected boxes to review them, or drag to cover more." data-zh-cn-aria-label="截图预览。点击自动框可调整选择，拖动可补画遮挡。"></canvas>
       </div>
       <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp" hidden>
     </section>
