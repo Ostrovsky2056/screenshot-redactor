@@ -156,6 +156,141 @@ test("reuses a speaker code on a repeated avatar and matching quote sender", () 
   assert.equal(result.speakerIds.get(sender), 0);
 });
 
+test("recognizes the nickname above a photo beside a repeated avatar", () => {
+  const pic = frame();
+  const portrait = [128, 178, 214];
+  pic.avatar(22, 25, portrait);
+  pic.label("林一", 88, 28);
+  pic.fill(80, 52, 234, 55, [230, 231, 235], 9);
+  pic.label("先发文字", 100, 72);
+
+  pic.avatar(22, 175, portrait);
+  const name = pic.label("林一", 88, 179, false);
+  const photo = { x0: 88, y0: 209, x1: 208, y1: 317 };
+  pic.fill(88, 209, 120, 108, [105, 136, 143]);
+  pic.fill(88, 209, 60, 54, [194, 121, 91]);
+  pic.fill(148, 263, 60, 54, [83, 99, 133]);
+
+  const result = findRegions(pic, pic.lines, model);
+  const nickname = result.associatedNames.find(box => covers([box], name));
+  const [first, repeated] = [...result.avatars].sort((a, b) => a.y0 - b.y0);
+  assert.equal(result.avatars.length, 2);
+  assert(nickname);
+  assert.equal(result.speakerIds.get(first), 0);
+  assert.equal(result.speakerIds.get(repeated), 0);
+  assert.equal(result.speakerIds.get(nickname), 0);
+  assert(covers(result.graphics, photo));
+  assert(!covers(result.messages, photo));
+});
+
+test("finds a wrapped outgoing quote to the left of its bar and links the original sender", () => {
+  const pic = frame();
+  pic.avatar(22, 35, [128, 178, 214]);
+  pic.label("林 一", 88, 37);
+  pic.fill(80, 60, 234, 55, [230, 231, 235], 9);
+  pic.label("之前的回复", 100, 80);
+
+  pic.avatar(765, 190, [222, 188, 122]);
+  pic.fill(645, 190, 106, 50, [153, 233, 175], 9);
+  pic.label("收到", 690, 208);
+  pic.fill(747, 249, 3, 48, [205, 205, 205]);
+  pic.label("林一：之前的回复", 644, 256);
+  const quote = pic.lines.at(-1);
+  const colon = quote.spans[2].box.x0;
+  quote.spans[0].box.x1 = colon + 4;
+  pic.label("再补一句", 692, 273);
+
+  const result = findRegions(pic, pic.lines, model);
+  const [incoming, outgoing] = [...result.avatars].sort((a, b) => a.y0 - b.y0);
+  assert.equal(result.avatars.length, 2);
+  assert.equal(result.quoteSenders.length, 1);
+  const [{ box, label }] = result.quoteSenders;
+  assert.equal(label, "林一");
+  assert.equal(box.x1, colon);
+  assert.equal(box.rightLimit, colon);
+  assert.equal(result.speakerIds.get(box), result.speakerIds.get(incoming));
+  assert.notEqual(result.speakerIds.get(box), result.speakerIds.get(outgoing));
+  assert.deepEqual(result.quoteBodies.map(({ line, start }) => line.text.slice(start)), ["之前的回复", "再补一句"]);
+});
+
+function drawCardOutline(pic, x, y, width, height) {
+  const border = [215, 215, 218];
+  pic.fill(x, y, width, 2, border);
+  pic.fill(x, y + height - 2, width, 2, border);
+  pic.fill(x, y, 2, height, border);
+  pic.fill(x + width - 2, y, 2, height, border);
+}
+
+for (const [kind, summary, cardHeight] of [
+  ["video thumbnail", "[Video]", 36],
+  ["link card", "[Link] Walk guide", 43],
+  ["mini app card", "[Mini app] Route map", 105],
+  ["file card", "[File] plan.pdf", 34],
+]) {
+  test("links a first-time sender beside a " + kind + " to a quote of that message", () => {
+    const pic = frame();
+    const groupTitle = kind === "video thumbnail" && pic.label("Trail notes (4)", 27, 5);
+    pic.avatar(22, 35, [128, 178, 214]);
+    const name = pic.label("Mira", 89, 37);
+    const card = { x0: 86, y0: 65, x1: 276, y1: 65 + cardHeight };
+    let title;
+    if (kind === "video thumbnail") {
+      pic.fill(86, 65, 190, cardHeight, [125, 151, 173]);
+      pic.fill(86, 65, 95, cardHeight / 2, [170, 123, 101]);
+      pic.fill(181, 65 + cardHeight / 2, 95, cardHeight / 2, [75, 104, 124]);
+    } else {
+      drawCardOutline(pic, 86, 65, 190, cardHeight);
+      if (kind === "mini app card") {
+        pic.fill(108, 72, 16, 16, [130, 145, 175], 2);
+        pic.fill(113, 76, 7, 9, [211, 186, 161]);
+        pic.fill(131, 75, 28, 14, [224, 226, 234], 2);
+        title = pic.label("Map", 134, 77, true, 7);
+        pic.fill(95, 95, 172, 65, [109, 157, 176]);
+      } else {
+        title = pic.label("Walk guide", 97, 73, true, 8);
+      }
+    }
+
+    pic.avatar(765, 236, [222, 188, 122]);
+    if (kind === "video thumbnail") {
+      drawCardOutline(pic, 582, 236, 168, 50);
+      pic.label("Another card", 596, 247, true, 8);
+    } else {
+      pic.fill(645, 236, 105, 50, [153, 233, 175], 9);
+      pic.label("收到", 690, 252);
+    }
+    pic.fill(747, 295, 3, 31, [205, 205, 205]);
+    const quote = "Mira: " + summary;
+    pic.label(quote, 739 - 9 * quote.length, 300, true, 9);
+
+    const result = findRegions(pic, pic.lines, model);
+    const incoming = result.avatars.find(box => box.x0 < 100);
+    const outgoing = result.avatars.find(box => box.x0 > 700);
+    const nickname = result.associatedNames.find(box => covers([box], name));
+    assert(incoming && outgoing && nickname);
+    assert.equal(result.avatars.length, 2);
+    assert.equal(result.speakerIds.get(nickname), result.speakerIds.get(incoming));
+    assert(covers(result.graphics, card));
+    if (title) assert(!covers(result.associatedNames, title));
+    if (groupTitle) assert.deepEqual(result.groupTitle, groupTitle);
+    assert.equal(result.quoteSenders.length, 1);
+    assert.equal(result.speakerIds.get(result.quoteSenders[0].box), result.speakerIds.get(incoming));
+    assert.notEqual(result.speakerIds.get(result.quoteSenders[0].box), result.speakerIds.get(outgoing));
+    assert.deepEqual(result.quoteBodies.map(({ line, start }) => line.text.slice(start).trim()), [summary]);
+  });
+}
+
+test("a central icon and outlined panel are not treated as a chat row", () => {
+  const pic = frame();
+  pic.avatar(260, 110, [143, 207, 167]);
+  pic.label("Settings", 323, 112);
+  drawCardOutline(pic, 322, 136, 184, 106);
+  pic.label("Display", 335, 150);
+  const result = findRegions(pic, pic.lines, model);
+  assert.deepEqual(result.avatars, []);
+  assert.deepEqual(result.associatedNames, []);
+});
+
 test("does not merge speakers with different nicknames even if their portraits match", () => {
   const pic = frame();
   const portrait = [200, 163, 195];

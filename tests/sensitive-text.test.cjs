@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { boxForRange, findRegions, mergeMessageLines, runs } = require("../assets/sensitive-text.js");
+const { alignMaskHeights, boxForRange, findRegions, mergeMessageLines, runs } = require("../assets/sensitive-text.js");
 
 function ocrLine(text, x, y, confidence = 80) {
   const spans = [...text.matchAll(/\S/gu)].map(({ index, 0: value }) => ({
@@ -38,4 +38,60 @@ test("offers only the text after a masked nickname and its separator", () => {
   const name = boxForRange(line, 0, 3);
   const choices = runs(line, [name], { skipSeparators: true });
   assert.deepEqual(choices.map(({ start, end }) => line.text.slice(start, end)), ["试 试"]);
+});
+
+test("aligns similar automatic text masks without shrinking the detected bounds", () => {
+  const image = { width: 800, height: 320 };
+  const comparable = [
+    { type: "url", x: 20, y: 80, width: 600, height: 33 },
+    { type: "name", x: 420, y: 150, width: 65, height: 42 },
+    { type: "name", x: 20, y: 30, width: 150, height: 37 },
+  ];
+  const untouched = [
+    { type: "avatar", x: 730, y: 140, width: 38, height: 38 },
+    { type: "bubble", x: 400, y: 128, width: 140, height: 41 },
+    { type: "graphic", x: 90, y: 110, width: 36, height: 38 },
+    { x: 590, y: 30, width: 80, height: 38 },
+    { type: "name", x: 220, y: 150, width: 60, height: 36, originalBounds: {} },
+    { type: "name", x: 250, y: 80, width: 50, height: 35, avatarNickname: true },
+    { type: "name", x: 520, y: 150, width: 80, height: 36, quoteSender: true },
+    { type: "name", x: 30, y: 200, width: 200, height: 85 },
+    { type: "name", x: 20, y: 175, width: 160, height: 36, enabled: false },
+  ];
+  const snapshot = structuredClone(untouched);
+  const first = { x: 20, y: 80, width: 600, height: 33 };
+  const regions = [...comparable, ...untouched];
+
+  assert.equal(alignMaskHeights(regions, [], [], image, image), regions);
+  assert.deepEqual(comparable.map(({ height }) => height), [42, 42, 42]);
+  assert.deepEqual(comparable[0].detectedBounds, first);
+  assert.equal(comparable[0].x, first.x);
+  assert.equal(comparable[0].width, first.width);
+  assert(comparable[0].y <= first.y && comparable[0].y + comparable[0].height >= first.y + first.height);
+  assert.deepEqual(untouched, snapshot);
+});
+
+test("fits text mask padding between adjacent rows and inside message bubbles", () => {
+  const image = { width: 510, height: 130 };
+  const regions = [
+    { type: "name", x: 140, y: 10, width: 25, height: 24 },
+    { type: "url", x: 20, y: 34, width: 55, height: 18 },
+    { type: "name", x: 120, y: 80, width: 32, height: 18 },
+    { type: "email", x: 201, y: 35, width: 60, height: 18 },
+    { type: "name", x: 300, y: 0, width: 35, height: 18 },
+    { type: "name", x: 425, y: 72, width: 32, height: 18 },
+  ];
+  const neighboringRows = [
+    { box: { x0: 12, y0: 19, x1: 89, y1: 32 } },
+    { box: { x0: 14, y0: 53, x1: 88, y1: 63 } },
+    { box: { x0: 115, y0: 63, x1: 172, y1: 78 } },
+    { box: { x0: 420, y0: 58, x1: 460, y1: 73 } },
+  ];
+  const bubbles = [{ x0: 196, y0: 33, x1: 267, y1: 54 }];
+
+  alignMaskHeights(regions, neighboringRows, bubbles, image, image);
+
+  assert.deepEqual(regions.map(({ y, height }) => [y, height]), [
+    [10, 24], [34, 18], [78, 24], [35, 18], [0, 24], [72, 24],
+  ]);
 });

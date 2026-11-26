@@ -161,15 +161,16 @@
     ];
   }
 
-  function profilePairs(pixels, tone, shapes, lines, model) {
-    const minimum = Math.max(11, Math.min(pixels.width, pixels.height) * .012);
-    const maximum = Math.min(pixels.width, pixels.height) * .21;
-    const likelyAvatars = shapes.filter(box => {
+  function avatarCandidates(shapes, minimum, maximum) {
+    return shapes.filter(box => {
       const w = width(box);
       const h = height(box);
       return w >= minimum && h >= minimum && w <= maximum && h <= maximum &&
         box.fill >= .48 && w / h >= .72 && w / h <= 1.38;
     });
+  }
+
+  function profilePairs(pixels, tone, shapes, lines, model, likelyAvatars, minimum) {
     const likelyBubbles = shapes.filter(box => width(box) >= minimum && height(box) >= minimum * .66 &&
       width(box) <= pixels.width * .9 && height(box) <= pixels.height * .36 && box.fill >= .58);
     const surfaces = new Map();
@@ -300,7 +301,88 @@
     return sameName ? { ...best, box: ink } : best;
   }
 
-  function quotes(shapes, lines, pairs) {
+  function hasCardOutline(pixels, tone, box) {
+    const band = Math.max(1, Math.ceil(Math.max(pixels.width, pixels.height) / 840));
+    const edges = [
+      [box.x0, box.y0, width(box), 0, 0, 1],
+      [box.x0, box.y1 - 1, width(box), 0, 0, -1],
+      [box.x0, box.y0, 0, height(box), 1, 0],
+      [box.x1 - 1, box.y0, 0, height(box), -1, 0],
+    ];
+    return edges.every(([x, y, dx, dy, inwardX, inwardY]) => {
+      let hits = 0;
+      for (let i = 2; i <= 8; i++) {
+        for (let depth = 0; depth < band; depth++) {
+          const at = pixelIndex(pixels, x + dx * i / 10 + inwardX * depth, y + dy * i / 10 + inwardY * depth);
+          if (distance(pixels.data, at, tone) <= 14) continue;
+          hits++;
+          break;
+        }
+      }
+      return hits >= 5;
+    });
+  }
+
+  function cardCandidates(pixels, tone, shapes, minimum) {
+    // Thumbnails can be textured, and a card may have only a thin edge against the chat background.
+    return shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
+      width(box) <= pixels.width * .85 && height(box) <= pixels.height * .8 &&
+      box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height &&
+      (box.fill >= .6 || hasCardOutline(pixels, tone, box)));
+  }
+
+  function mediaProfiles(pixels, tone, lines, cards, avatars, textProfiles) {
+    const occupied = textProfiles.flatMap(({ avatar, bubble }) => [avatar, bubble]);
+    const isOccupied = box => occupied.some(other => overlap(other, box) > .55);
+    const profiles = [];
+    for (const avatar of avatars) {
+      if (avatar.clipped || isOccupied(avatar)) continue;
+      const size = length(avatar);
+      const center = (avatar.x0 + avatar.x1) / 2;
+      const side = center < pixels.width / 2 ? "left" : "right";
+      const margin = side === "left" ? avatar.x0 : pixels.width - avatar.x1;
+      const inChatLane = textProfiles.some(profile => profile.side === side &&
+        Math.abs((profile.avatar.x0 + profile.avatar.x1) / 2 - center) <= .42 * size);
+      if (!inChatLane && margin > Math.min(.16 * pixels.width, 2 * size)) continue;
+
+      let nearest = null;
+      let nearestDistance = Infinity;
+      for (const bubble of cards) {
+        const gap = side === "left" ? bubble.x0 - avatar.x1 : avatar.x0 - bubble.x1;
+        const drop = bubble.y0 - avatar.y0;
+        if (gap < .04 * size || gap > 1.1 * size || drop < -.18 * size || drop > .95 * size ||
+          width(bubble) < 1.2 * size || height(bubble) < .6 * size || isOccupied(bubble)) continue;
+        const separation = gap + Math.abs(drop) * .45;
+        if (separation >= nearestDistance) continue;
+        const profile = { avatar, bubble, side, size };
+        const name = nickname(pixels, tone, lines, profile);
+        if (!name && !inChatLane && Math.abs(drop) > .2 * size) continue;
+        nearest = { ...profile, name };
+        nearestDistance = separation;
+      }
+      if (nearest) {
+        profiles.push(nearest);
+        occupied.push(avatar, nearest.bubble);
+      }
+    }
+    return profiles;
+  }
+
+  function quoteNameBounds(pixels, tone, line, start, end, separator) {
+    const box = boxForRange(line, start, end);
+    const colon = exactBoxForRange(line, separator, separator + 1);
+    if (!box || !colon) return box;
+    const rightLimit = Math.floor(colon.x0);
+    if (rightLimit >= box.x1) return { ...box, rightLimit };
+    // A symbol box can overlap the colon. Only shorten it at a gap near the end of the name.
+    if (rightLimit <= box.x0 || box.x1 - rightLimit > .2 * width(box)) return box;
+    const boundary = {
+      x0: rightLimit - 1, x1: rightLimit, y0: Math.max(0, box.y0 - 1), y1: Math.min(pixels.height, box.y1 + 1),
+    };
+    return inkColumns(pixels, tone, boundary).length ? box : { ...box, x1: rightLimit, rightLimit };
+  }
+
+  function quotes(pixels, tone, shapes, lines, pairs) {
     const senders = [];
     const bodies = new Map();
     for (const { bubble, side, size } of pairs) {
@@ -309,21 +391,27 @@
         if (width(rail) > size * .14 || height(rail) < size * .49 || width(rail) / height(rail) >= .23 || rail.fill < .68) continue;
         if (rail.y0 < bubble.y1 - size * .10 || rail.y0 > bubble.y1 + size * .9) continue;
         if (Math.abs(rail.x0 - edge) > size * .51) continue;
-        const quotedLines = lines.filter(line => {
-          const gap = line.box.x0 - rail.x1;
-          return gap >= 0 && gap <= size * .78 && centerY(line.box) >= rail.y0 && centerY(line.box) <= rail.y1;
-        }).sort((a, b) => centerY(a.box) - centerY(b.box));
+        const alongside = lines.filter(({ box }) => centerY(box) >= rail.y0 && centerY(box) <= rail.y1);
+        const toLeft = side === "right" ? alongside.filter(({ box }) => {
+          const gap = rail.x0 - box.x1;
+          return gap >= 0 && gap <= size * .78;
+        }) : [];
+        const align = toLeft.length ? "x1" : "x0";
+        const quotedLines = (toLeft.length ? toLeft : alongside.filter(({ box }) => {
+          const gap = box.x0 - rail.x1;
+          return gap >= 0 && gap <= size * .78;
+        })).sort((a, b) => centerY(a.box) - centerY(b.box));
         const first = quotedLines[0];
         if (!first) continue;
         for (const line of quotedLines) {
-          if (Math.abs(line.box.x0 - first.box.x0) > size * .35) continue;
+          if (Math.abs(line.box[align] - first.box[align]) > size * .35) continue;
           if (!bodies.has(line)) bodies.set(line, 0);
         }
         if (centerY(first.box) > rail.y0 + size * .62 || bodies.get(first)) continue;
         const match = first.text.match(/^\s*([\p{L}\p{N}\p{So}][\p{L}\p{N}\p{So}\p{M}\u200d_@. ·'’-]{0,32}?)\s*[:：]/u);
         if (!match || /^[\d ]+$/.test(match[1])) continue;
         const start = match[0].indexOf(match[1]);
-        const sender = boxForRange(first, start, start + match[1].length);
+        const sender = quoteNameBounds(pixels, tone, first, start, start + match[1].length, match[0].length - 1);
         if (sender) senders.push({ box: sender, label: match[1] });
         bodies.set(first, match[0].length);
       }
@@ -564,11 +652,19 @@
       .replace(/(\p{Script=Han})\s+(?=\p{Script=Han})/gu, "$1").replace(/\s+/g, " ").trim();
   }
 
-  function groupSpeakers(pixels, profiles) {
-    const groups = [];
-    const ids = new Map();
+  function groupSpeakers(pixels, profiles, { groups, ids }) {
     const ordered = [...profiles].sort((a, b) => a.avatar.y0 - b.avatar.y0 || a.avatar.x0 - b.avatar.x0);
     for (const { avatar, side, name } of ordered) {
+      const existing = ids.get(avatar);
+      if (existing !== undefined) {
+        if (name) {
+          const group = groups[existing];
+          if (group.key) name.label = group.key;
+          else group.key = speakerKey(name.label);
+          ids.set(name.box, existing);
+        }
+        continue;
+      }
       const key = speakerKey(name?.label || "");
       const portrait = fingerprint(pixels, avatar);
       let closest;
@@ -590,7 +686,6 @@
       ids.set(avatar, closest.id);
       if (name) ids.set(name.box, closest.id);
     }
-    return ids;
   }
 
   function matchQuoteSpeakers(profiles, senders, ids, labels = new Map()) {
@@ -611,22 +706,45 @@
     if (!tone) return { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
       profiles: [], quoteSenders: [], speakerIds: new Map() };
     const shapes = components(pixels, tone);
-    const detectedPairs = profilePairs(pixels, tone, shapes, lines, model);
+    const shortest = Math.min(pixels.width, pixels.height);
+    const minimum = Math.max(14, shortest * .028);
+    const minimumAvatar = Math.max(11, shortest * .012);
+    const cards = cardCandidates(pixels, tone, shapes, minimum);
+    const outlines = cards.filter(box => box.fill < .6);
+    const insideCard = box => outlines.some(card => width(card) > width(box) + 2 &&
+      height(card) > height(box) + 2 && overlap(card, box) >= .98);
+    // Words and icons inside an outlined card can resemble a small avatar and bubble.
+    const messageShapes = shapes.filter(box => !insideCard(box));
+    const likelyAvatars = avatarCandidates(messageShapes, minimumAvatar, shortest * .21);
+    const detectedPairs = profilePairs(pixels, tone, messageShapes, lines, model, likelyAvatars, minimumAvatar);
     const divider = detectedPairs.length >= 2 ? headerDivider(pixels, .16 * pixels.height) : null;
-    const { groupTitle, titleCrop } = chatHeader(lines, detectedPairs, pixels, divider);
+    let { groupTitle, titleCrop } = chatHeader(lines, detectedPairs, pixels, divider);
     const titleArea = groupTitle || titleCrop;
     const pairs = titleArea ? detectedPairs.filter(({ avatar, bubble }) =>
       overlap(avatar, titleArea) < .65 || overlap(bubble, titleArea) < .65) : detectedPairs;
-    const { senders, quoteBodies } = quotes(shapes, lines, pairs);
     const profiles = pairs.map(pair => ({ ...pair, name: nickname(pixels, tone, lines, pair) }));
-    const speakerIds = groupSpeakers(pixels, profiles);
-    matchQuoteSpeakers(profiles, senders, speakerIds);
+    const speakerIds = new Map();
+    const grouping = { groups: [], ids: speakerIds };
+    groupSpeakers(pixels, profiles, grouping);
     const recovered = repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, titleArea, speakerIds, divider);
-    const minimum = Math.max(14, Math.min(pixels.width, pixels.height) * .028);
-    const graphics = shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
-      box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height);
+    const unpairedAvatars = [...recovered, ...likelyAvatars].filter(box => !titleArea || overlap(box, titleArea) < .65);
+    const media = mediaProfiles(pixels, tone, lines, cards.filter(box => !insideCard(box)), unpairedAvatars, profiles);
+    groupSpeakers(pixels, media, grouping);
+    profiles.push(...media);
+    if (media.length && !groupTitle && !titleCrop && profiles.length >= 2) {
+      const mediaDivider = detectedPairs.length >= 2 ? divider : headerDivider(pixels, .16 * pixels.height);
+      ({ groupTitle, titleCrop } = chatHeader(lines, profiles, pixels, mediaDivider));
+    }
+
+    const paired = new Set(media.map(({ avatar }) => avatar));
+    const avatars = avatarSlots(profiles, recovered.filter(avatar => !paired.has(avatar)), pixels, speakerIds);
+    const mediaCards = new Set(media.map(({ bubble }) => bubble));
+    const graphics = shapes.filter(box => mediaCards.has(box) || (width(box) >= minimum && height(box) >= minimum &&
+      box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height));
+    const { senders, quoteBodies } = quotes(pixels, tone, shapes, lines, profiles);
+    matchQuoteSpeakers(profiles, senders, speakerIds);
     return {
-      avatars: avatarSlots(profiles, recovered, pixels, speakerIds),
+      avatars,
       groupTitle,
       titleCrop,
       associatedNames: [

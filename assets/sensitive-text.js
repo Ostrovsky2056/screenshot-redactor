@@ -24,6 +24,8 @@
     { type: "address", pattern: /(?:^|[^A-Z\d])(?:(?:street|shipping|home) *address|地 *址|住 *址) *[:=] *([^;；|]{3,100})/gi },
   ];
 
+  const textMaskTypes = new Set(rules.map(({ type }) => type));
+
   function readLine(words) {
     let text = "";
     const spans = [];
@@ -226,7 +228,46 @@
     return regions;
   }
 
-  const scanner = { readLines, mergeMessageLines, findRegions, scaleBox, runs, boxForRange, exactBoxForRange };
+  function alignMaskHeights(regions, lines, messages, original, scan) {
+    const candidates = regions.filter(region => textMaskTypes.has(region.type) && region.enabled !== false &&
+      !region.avatarNickname && !region.quoteSender && !region.originalBounds).sort((a, b) => b.height - a.height);
+    if (candidates.length < 2) return regions;
+
+    const rows = lines.map(({ box }) => scaleBox(box, "text", original, scan, 0)).filter(Boolean);
+    const bubbles = messages.map(box => scaleBox(box, "bubble", original, scan, 0)).filter(Boolean);
+    // Group similar line heights and use the tallest box in each group.
+    let targetHeight = candidates[0].height;
+    for (const region of candidates.slice(1)) {
+      if (region.height < .75 * targetHeight) targetHeight = region.height;
+      if (region.height === targetHeight) continue;
+
+      const end = region.y + region.height;
+      const middle = region.y + region.height / 2;
+      const right = region.x + region.width;
+      const bubble = bubbles.find(box => box.x <= region.x && right <= box.x + box.width &&
+        box.y <= region.y && end <= box.y + box.height);
+      let top = bubble?.y ?? 0;
+      let bottom = bubble ? bubble.y + bubble.height : original.height;
+      for (const row of rows) {
+        if (row.x >= right || row.x + row.width <= region.x) continue;
+        const rowEnd = row.y + row.height;
+        if (rowEnd <= middle) top = Math.max(top, Math.min(region.y, rowEnd));
+        if (row.y >= middle) bottom = Math.min(bottom, Math.max(end, row.y));
+      }
+
+      // Keep the recognized box fully covered and stay between nearby text rows.
+      const earliest = Math.max(top, end - targetHeight);
+      const latest = Math.min(region.y, bottom - targetHeight);
+      if (earliest > latest) continue;
+      const centered = region.y - Math.floor((targetHeight - region.height) / 2);
+      region.detectedBounds = { x: region.x, y: region.y, width: region.width, height: region.height };
+      region.y = Math.min(latest, Math.max(earliest, centered));
+      region.height = targetHeight;
+    }
+    return regions;
+  }
+
+  const scanner = { readLines, mergeMessageLines, findRegions, scaleBox, alignMaskHeights, runs, boxForRange, exactBoxForRange };
   if (typeof module !== "undefined") module.exports = scanner;
   else window.SensitiveText = scanner;
 })();

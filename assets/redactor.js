@@ -960,6 +960,10 @@
     function add(box, type, margin, { enabled = true, pending = false, avatarNickname = false, quoteSender = false } = {}) {
       const region = SensitiveText.scaleBox(box, type, image, sample, margin);
       if (!region) return;
+      if (quoteSender && box.rightLimit !== undefined) {
+        const limit = Math.floor(box.rightLimit * image.width / sample.width);
+        region.width = Math.min(region.width, limit - region.x);
+      }
       const speaker = visual.speakerIds.get(box);
       const existing = regions.find(other => similar(other, region) || (contains(other, region) &&
         (type === "name" || other.enabled !== false || (type === "graphic" && other.type === "text"))));
@@ -999,7 +1003,7 @@
     }
     for (const box of visual.messages) add(box, "bubble", 0, { enabled: false });
     for (const box of visual.graphics) add(box, "graphic", 0, { enabled: false });
-    return regions;
+    return SensitiveText.alignMaskHeights(regions, lines, visual.messages, image, sample);
   }
 
   function stabilizeSpeakerIds(regions, previous) {
@@ -1131,7 +1135,7 @@
         const messageLines = SensitiveText.mergeMessageLines(lines, visual.messages, messageReadings);
         const detected = stabilizeSpeakerIds(detections(messageLines, visual, inlineNames, image, sample), previous).map(region => {
           const decision = reviewed.find(other => !matched.has(other) && other.type === region.type &&
-            similar(other.originalBounds || other, region));
+            similar(other.originalBounds || other.detectedBounds || other, region.detectedBounds || region));
           if (!decision) return region;
           matched.add(decision);
           const reviewedRegion = { ...region, enabled: decision.enabled, reviewed: true };
@@ -1142,7 +1146,8 @@
         const next = [...manual, ...detected, ...adjusted];
         if (next.length !== previous.length || next.some((region, index) => {
           const before = previous[index];
-          return region.enabled !== before.enabled || region.type !== before.type || region.speaker !== before.speaker ||
+          const heightChanged = (region.detectedBounds || before.detectedBounds) && region.height !== before.height;
+          return heightChanged || region.enabled !== before.enabled || region.type !== before.type || region.speaker !== before.speaker ||
             region.pending !== before.pending || region.avatarNickname !== before.avatarNickname ||
             region.quoteSender !== before.quoteSender || region.clipped !== before.clipped || !similar(region, before);
         })) {
@@ -1357,7 +1362,7 @@
         const bounds = resizedBounds(drag, end);
         if (Object.keys(bounds).some(key => bounds[key] !== region[key])) {
           const resized = { ...region, ...bounds, reviewed: true };
-          if (region.type) resized.originalBounds = region.originalBounds || regionBounds(region);
+          if (region.type) resized.originalBounds = region.originalBounds || region.detectedBounds || regionBounds(region);
           history.push(regions.map(item => item === region ? resized : item));
         }
       }
