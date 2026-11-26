@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { findRegions } = require("../assets/chat-mentions.js");
+const { findRegions, refineRegions, croppedRegions } = require("../assets/chat-mentions.js");
 const { runs } = require("../assets/sensitive-text.js");
 
 const message = { x0: 0, y0: 20, x1: 700, y1: 400 };
@@ -101,4 +101,42 @@ test("stops an inline nickname box before the next Han glyph in a chat message",
   assert.equal(name.x0, 14);
   assert(name.x1 >= 49 && name.x1 <= 54);
   assert.deepEqual([name.y0, name.y1], [17, 37]);
+});
+
+test("uses reread symbol boxes for both occurrences of the same mixed-script mention", async () => {
+  const speaker = line("Mira", 5);
+  const first = line("请 Mira 回复，Mira确认", 28, true);
+  const second = line("请 MIRA 回复，Mira确认");
+  const result = await refineRegions([speaker, first], { ...layout, participantNames: [speaker.box] }, null, boxes => {
+    assert.deepEqual(boxes, [first.box]);
+    return new Map([[boxes[0], { line: second, confidence: 95 }]]);
+  });
+  assert.deepEqual(result, [
+    { box: { x0: 32, y0: 28, x1: 72, y1: 37 }, pending: false },
+    { box: { x0: 112, y0: 28, x1: 152, y1: 37 }, pending: false },
+  ]);
+});
+
+test("leaves a name pending when the reread cannot separate it from the surrounding word", async () => {
+  const first = line("帮吴晴看下", 28, true);
+  const result = await refineRegions([first], layout, null, boxes => {
+    assert.deepEqual(boxes, [first.box]);
+    return new Map([[boxes[0], { line: first, confidence: 95 }]]);
+  });
+  assert.deepEqual(result, [{ box: first.box, pending: true }]);
+});
+
+test("can recover an explicit mixed-script mention on the reread", async () => {
+  const first = line("请 #Mira 确认");
+  const second = line("请 @Mira 确认");
+  const result = await refineRegions([first], layout, null, boxes =>
+    new Map([[boxes[0], { line: second, confidence: 95 }]]));
+  assert.deepEqual(result, [{ box: { x0: 42, y0: 28, x1: 82, y1: 37 }, pending: false }]);
+});
+
+test("recovers a nickname from a missed color bubble and leaves its message text visible", () => {
+  const reading = line("阿澄，试试");
+  const crops = new Map([[reading.box, { line: reading, confidence: 94 }]]);
+  assert.deepEqual(croppedRegions([], layout, null, crops), [{ x0: 12, y0: 28, x1: 32, y1: 37 }]);
+  assert.deepEqual(croppedRegions([], { ...layout, messages: [] }, null, crops), []);
 });

@@ -32,9 +32,18 @@
       /^(?:[A-Z][\p{L}.'’-]{1,19})(?: +[A-Z][\p{L}.'’-]{1,19}){0,2}$/u.test(value);
   }
 
-  function nameCandidates(line) {
+  function nameCandidates(line, pixels) {
     const { text, box, spans } = line;
     const choices = nameLike(text) ? [box] : [];
+    // List-style chats often put the display name and clock on the same OCR line.
+    const clock = text.match(/,?\s+:?\s*(?:\d{1,2}\/\d{1,2}\s+)?[0-9loi]{1,2}\s*:\s*[0-9loi]{2}(?:\s*[AP]M)?$/i);
+    const time = clock?.[0].replace(/[li]/gi, "1").replace(/o/gi, "0");
+    if (time && /\d{2}/.test(clock[0]) && /\b(?:[01]?\d|2[0-3])\s*:\s*[0-5]\d(?:\s*[AP]M)?$/i.test(time) &&
+      nameLike(text.slice(0, clock.index))) {
+      const name = SensitiveText.exactBoxForRange(line, 0, clock.index);
+      const comma = clock[0][0] === "," && spans.find(span => span.start === clock.index)?.box;
+      if (name) choices.unshift(comma ? includeLeadingInk(pixels, name, comma) : name);
+    }
     const prefix = text.match(/^(?:[A-Z]{1,3}|[^\p{L}\p{N}\s]{1,3}) +/u)?.[0].length ?? 0;
     const suffix = text.match(/ +(?:[A-Z]{1,3}|[^\p{L}\p{N}\s]{1,3})$/u)?.[0].length ?? 0;
     // OCR can join a graphic avatar's initials or symbol to the adjacent name.
@@ -51,6 +60,26 @@
       }
     }
     return choices;
+  }
+
+  function includeLeadingInk(pixels, name, separator) {
+    // A symbol box for a comma can also contain the preceding letter.
+    const tone = background(pixels, name, 1);
+    const bottom = name.y0 + Math.floor(.65 * (name.y1 - name.y0));
+    const right = Math.min(separator.x1, name.x1 + name.y1 - name.y0);
+    const { data } = pixels;
+    let x1 = name.x1;
+    for (let x = name.x1; x < right; x++) {
+      for (let y = name.y0; y < bottom; y++) {
+        const offset = (y * pixels.width + x) * 4;
+        if (Math.abs(data[offset] - tone[0]) + Math.abs(data[offset + 1] - tone[1]) +
+          Math.abs(data[offset + 2] - tone[2]) > 110) {
+          x1 = x + 1;
+          break;
+        }
+      }
+    }
+    return x1 === name.x1 ? name : { ...name, x1 };
   }
 
   function background(pixels, area, stride) {
@@ -182,6 +211,46 @@
     };
   }
 
+  function chatSticker(pixels, face, avatars) {
+    const width = face.x1 - face.x0, height = face.y1 - face.y0;
+    const aligned = avatars.some(avatar => {
+      if (avatar.clipped) return false;
+      const size = avatar.y1 - avatar.y0;
+      const left = (avatar.x0 + avatar.x1) / 2 < pixels.width / 2;
+      const gap = left ? face.x0 - avatar.x1 : avatar.x0 - face.x1;
+      const drop = face.y0 - avatar.y0;
+      return gap >= .08 * size && gap <= 1.25 * size && drop >= .18 * size && drop < 1.35 * size &&
+        width <= 1.5 * size && height <= 1.5 * size;
+    });
+    if (!aligned) return false;
+    const box = {
+      x0: Math.max(0, Math.floor(face.x0 - .22 * width)),
+      y0: Math.max(0, Math.floor(face.y0 - .22 * height)),
+      x1: Math.min(pixels.width, Math.ceil(face.x1 + .22 * width)),
+      y1: Math.min(pixels.height, Math.ceil(face.y1 + .22 * height)),
+    };
+    const tone = background(pixels, box, 2);
+    const colors = new Map();
+    let edge = 0, backgroundEdge = 0, foreground = 0;
+    for (let y = box.y0; y < box.y1; y += 2) {
+      for (let x = box.x0; x < box.x1; x += 2) {
+        const i = (y * pixels.width + x) * 4;
+        const [r, g, b] = pixels.data.subarray(i, i + 3);
+        const base = Math.abs(r - tone[0]) + Math.abs(g - tone[1]) + Math.abs(b - tone[2]) < 37;
+        if (x === box.x0 || y === box.y0 || x >= box.x1 - 2 || y >= box.y1 - 2) {
+          edge++;
+          if (base) backgroundEdge++;
+        }
+        if (base) continue;
+        const color = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5);
+        colors.set(color, (colors.get(color) || 0) + 1);
+        foreground++;
+      }
+    }
+    const common = [...colors.values()].sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0);
+    return backgroundEdge > .67 * edge && foreground > .18 * width * height / 4 && common >= .60 * foreground;
+  }
+
   function offsets(full, side) {
     const positions = [0];
     const step = Math.round(side * .78);
@@ -233,8 +302,9 @@
       pixels ||= canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
       return pixels;
     };
+    const colorCrops = HighlightMentions.findCrops(readPixels());
     const chat = typeof ChatLayout !== "undefined" && typeof ChatLayoutModel !== "undefined"
-      ? ChatLayout.findRegions(readPixels(), lines, ChatLayoutModel)
+      ? ChatLayout.findRegions(readPixels(), lines, ChatLayoutModel, colorCrops)
       : { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
         profiles: [], quoteSenders: [], speakerIds: new Map() };
     if (readNicknames && chat.quoteSenders.some(({ box }) => !chat.speakerIds.has(box))) {
@@ -247,8 +317,9 @@
     const avatars = chat.avatars;
     const associatedNames = [...chat.associatedNames];
     const quotedLines = new Set(chat.quoteBodies.map(({ line }) => line));
-    const candidateNames = lines.filter(line => !quotedLines.has(line)).flatMap(nameCandidates)
-      .filter(box => !chat.messages.some(message => overlap(box, message) > .55))
+    const candidateNames = lines.filter(line => !quotedLines.has(line)).flatMap(line => nameCandidates(line, readPixels()))
+      .filter(box => !(chat.groupTitle && overlap(box, chat.groupTitle) > .55) &&
+        !chat.messages.some(message => overlap(box, message) > .55))
       .slice(0, 180);
     if (candidateNames.length) {
       for (const box of candidateNames) {
@@ -266,6 +337,10 @@
         for (const face of faces) {
           if (avatars.some(box => overlap(box, face) > .55)) continue;
           const avatar = enclosingAvatar(readPixels(), face);
+          if (chat.profiles.length >= 2 && chatSticker(readPixels(), avatar, avatars)) {
+            chat.graphics.push(avatar);
+            continue;
+          }
           if (!avatars.some(box => overlap(box, avatar) > .55)) avatars.push(avatar);
         }
       } catch {
@@ -281,7 +356,7 @@
       });
       if (nearby && !associatedNames.some(box => overlap(box, nearby) > .75)) associatedNames.push(nearby);
     }
-    return { ...chat, associatedNames, participantNames: chat.associatedNames, faceScanIncomplete };
+    return { ...chat, associatedNames, participantNames: associatedNames, faceScanIncomplete, colorCrops };
   }
 
   const vision = { loadModel, findRegions };

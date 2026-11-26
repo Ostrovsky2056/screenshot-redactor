@@ -1,5 +1,5 @@
 (function () {
-  const { boxForRange } = typeof module === "undefined"
+  const { boxForRange, exactBoxForRange } = typeof module === "undefined"
     ? window.SensitiveText : require("./sensitive-text.js");
   const width = box => box.x1 - box.x0;
   const height = box => box.y1 - box.y0;
@@ -326,6 +326,119 @@
     return { senders, quoteBodies: Array.from(bodies, ([line, start]) => ({ line, start })) };
   }
 
+  function chatTitle(lines, pairs, pixels) {
+    if (pairs.length < 2) return null;
+    const firstMessage = Math.min(...pairs.map(({ bubble }) => bubble.y0));
+    for (const line of lines) {
+      const { box, text } = line;
+      if (box.x0 >= .17 * pixels.width || box.y0 >= .15 * pixels.height || box.y1 >= firstMessage ||
+        line.confidence < 48) continue;
+      const suffix = text.match(/\s+\(\s*[1-9][0-9]{0,3}\s*\)\s*$/u);
+      if (!suffix || !/\p{L}/u.test(text.slice(0, suffix.index))) continue;
+      const title = exactBoxForRange(line, 0, suffix.index);
+      const count = exactBoxForRange(line, suffix.index, text.length);
+      if (!title || !count || count.x0 <= title.x0) continue;
+      // Parts of a title can be split into separate OCR lines by the sparse-text pass.
+      const leading = lines.find(other => other !== line && !(other.confidence < 55) &&
+        other.box.x1 <= title.x0 && title.x0 - other.box.x1 < height(title) &&
+        Math.min(other.box.y1, title.y1) - Math.max(other.box.y0, title.y0) >= .65 * height(other.box));
+      const label = leading ? bounds([leading.box, title]) : title;
+      return { ...label, x1: Math.min(label.x1, count.x0) };
+    }
+    return null;
+  }
+
+  function sameAvatarFragment(pixels, tone, fragment, avatar, atStart) {
+    const step = Math.max(1, Math.ceil(width(fragment) / 27));
+    const samples = [];
+    for (let y = fragment.y0; y < fragment.y1; y += step) {
+      for (let x = fragment.x0; x < fragment.x1; x += step) {
+        const i = pixelIndex(pixels, x, y);
+        if (distance(pixels.data, i, tone) > 28) samples.push({ x, y, i });
+      }
+    }
+    if (samples.length < 12) return false;
+    const offset = atStart ? avatar.y1 - fragment.y1 : avatar.y0 - fragment.y0;
+    const slack = Math.round(.14 * height(avatar));
+    for (let dy = -slack; dy <= slack; dy++) {
+      for (let dx = -step; dx <= step; dx++) {
+        let same = 0;
+        for (const { x, y, i } of samples) {
+          const refX = x + dx, refY = y + offset + dy;
+          if (refX < avatar.x0 || refX >= avatar.x1 || refY < avatar.y0 || refY >= avatar.y1) continue;
+          const j = pixelIndex(pixels, refX, refY);
+          const data = pixels.data;
+          if (Math.abs(data[i] - data[j]) + Math.abs(data[i + 1] - data[j + 1]) +
+            Math.abs(data[i + 2] - data[j + 2]) < 118) same++;
+        }
+        if (same >= .78 * samples.length) return true;
+      }
+    }
+    return false;
+  }
+
+  function repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, groupTitle, speakerIds) {
+    const recovered = [];
+    for (const shape of [...shapes, ...colorCrops]) {
+      const w = width(shape), h = height(shape);
+      if (w < 10 || h < 5 || profiles.some(({ avatar }) => overlap(avatar, shape) > .65) ||
+        recovered.some(avatar => overlap(avatar, shape) > .65)) continue;
+      const clipped = h < .65 * w;
+      const nearTop = shape.y0 <= 3 ||
+        (groupTitle && shape.y0 >= groupTitle.y1 && shape.y0 < .26 * pixels.height);
+      const nearBottom = pixels.height - shape.y1 <= 3;
+      if (clipped && (!nearTop && !nearBottom)) continue;
+
+      for (const { avatar, side } of profiles) {
+        const size = width(avatar);
+        if (w < .56 * size || w > 1.12 * size || h > 1.12 * height(avatar) ||
+          shape.x0 < avatar.x0 - .10 * size || shape.x1 > avatar.x1 + .10 * size) continue;
+        if (clipped && h > .64 * height(avatar)) continue;
+        if (!clipped && (h < .72 * height(avatar) || shape.outlined !== undefined)) continue;
+        const adjacent = !clipped || shapes.some(bubble => {
+          const gap = side === "left" ? bubble.x0 - shape.x1 : shape.x0 - bubble.x1;
+          const cut = nearTop ? Math.abs(bubble.y0 - shape.y0) : Math.abs(bubble.y1 - shape.y1);
+          return gap >= 0 && gap <= 1.6 * size && cut <= Math.max(3, .10 * size) &&
+            height(bubble) >= h && width(bubble) >= .85 * size && bubble.fill > .5;
+        }) || lines.some(({ box, confidence }) => {
+          const gap = side === "left" ? box.x0 - shape.x1 : shape.x0 - box.x1;
+          return !(confidence < 55) && gap >= 0 && gap <= 1.85 * size &&
+            Math.abs(centerY(box) - centerY(shape)) < .57 * height(avatar) && width(box) >= .75 * size;
+        });
+        if (!adjacent || !sameAvatarFragment(pixels, tone, shape, avatar, !clipped || nearTop)) continue;
+        const portrait = clipped ? { ...shape, clipped,
+          x0: Math.max(0, shape.x0 - 2), x1: Math.min(pixels.width, shape.x1 + 2) } : { ...shape };
+        recovered.push(portrait);
+        speakerIds.set(portrait, speakerIds.get(avatar));
+        break;
+      }
+    }
+    return recovered;
+  }
+
+  function avatarSlots(profiles, recovered, pixels, speakerIds) {
+    const avatars = profiles.map(({ avatar }) => avatar);
+    if (profiles.length < 2) return [...avatars, ...recovered];
+    const sizes = avatars.map(box => Math.max(width(box), height(box))).sort((a, b) => a - b);
+    const typical = sizes[Math.floor(sizes.length / 2)];
+    const size = sizes.findLast(value => value <= 1.17 * typical);
+    return [...avatars, ...recovered].map(avatar => {
+      if (avatar.clipped || width(avatar) > size || height(avatar) > size ||
+        width(avatar) < .44 * size || height(avatar) < .74 * size) return avatar;
+      const middle = (avatar.x0 + avatar.x1) / 2;
+      const lane = avatars.map(box => (box.x0 + box.x1) / 2)
+        .filter(x => Math.abs(x - middle) <= .20 * size).sort((a, b) => a - b);
+      const center = lane[Math.floor(lane.length / 2)] ?? middle;
+      const left = Math.max(0, Math.min(pixels.width - size, avatar.x0,
+        Math.max(avatar.x1 - size, Math.floor(center - size / 2))));
+      const top = Math.max(0, Math.min(pixels.height - size, Math.floor(centerY(avatar) - size / 2)));
+      const box = { x0: left, y0: top, x1: left + size, y1: top + size };
+      if (profiles.some(({ bubble }) => overlap(bubble, box) > .08)) return avatar;
+      speakerIds.set(box, speakerIds.get(avatar));
+      return box;
+    });
+  }
+
   function fingerprint(pixels, box) {
     const samples = new Float32Array(6 * 6 * 3);
     for (let y = 0; y < 6; y++) {
@@ -393,7 +506,7 @@
     }
   }
 
-  function findRegions(pixels, lines, model) {
+  function findRegions(pixels, lines, model, colorCrops = []) {
     const tone = dominantTone(pixels);
     if (!tone) return { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
       profiles: [], quoteSenders: [], speakerIds: new Map() };
@@ -403,11 +516,14 @@
     const profiles = pairs.map(pair => ({ ...pair, name: nickname(pixels, tone, lines, pair) }));
     const speakerIds = groupSpeakers(pixels, profiles);
     matchQuoteSpeakers(profiles, senders, speakerIds);
+    const groupTitle = chatTitle(lines, pairs, pixels);
+    const recovered = repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, groupTitle, speakerIds);
     const minimum = Math.max(14, Math.min(pixels.width, pixels.height) * .028);
     const graphics = shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
       box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height);
     return {
-      avatars: pairs.map(({ avatar }) => avatar),
+      avatars: avatarSlots(profiles, recovered, pixels, speakerIds),
+      groupTitle,
       associatedNames: [
         ...profiles.filter(({ name }) => name).map(({ name }) => name.box),
         ...senders.map(({ box }) => box),

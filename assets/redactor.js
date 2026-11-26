@@ -2,6 +2,7 @@
   const maskColor = "#191a16";
   const speakerColors = ["#355665", "#7b4a35", "#395840", "#51466d", "#69404f", "#465674"];
   const previewLimit = 1600;
+  const ocrLanguages = ["eng", "chi_sim"];
   const maxSide = 16_384;
   const maxPixels = 40_000_000;
   const messages = {
@@ -12,8 +13,10 @@
       ready: "Drag on the image to cover a region.",
       masks: count => count + (count === 1 ? " region covered" : " regions covered"),
       reviewed: (count, total) => count + " of " + total + " selected. Click a dashed box to toggle it, or drag to add one.",
+      pendingNames: count => count === 1 ? "1 name box needs review (amber)." : count + " name boxes need review (amber).",
       ocrLoading: "Loading the on-device recognition models…",
       ocrRunning: "Recognizing text on this device…",
+      ocrRefining: "Checking name boundaries on this device…",
       visionRunning: "Looking for avatars and faces on this device…",
       noMatches: "No regions detected. Drag to cover any details yourself.",
       scanPartial: "Part of the scan could not finish. Review the boxes and add missing masks.",
@@ -33,8 +36,10 @@
       ready: "在图上拖出矩形，遮挡敏感区域。",
       masks: count => "已遮挡 " + count + " 处",
       reviewed: (count, total) => "已框选 " + count + " 处，共 " + total + " 个候选。点击虚线框切换选择，拖动可补画。",
+      pendingNames: count => "另有 " + count + " 处姓名范围待核对（琥珀色虚线）。",
       ocrLoading: "正在加载本地识别模型…",
       ocrRunning: "正在浏览器本地识别…",
+      ocrRefining: "正在本地复核姓名边界…",
       visionRunning: "正在本地查找头像和人脸…",
       noMatches: "未识别出可框选的区域，可以拖动补画。",
       scanPartial: "部分识别没有完成。请核对框选结果并补画遗漏的区域。",
@@ -94,6 +99,7 @@
     const language = messages[document.documentElement.lang] || messages.en;
     const regions = masks();
     const count = regions.filter(region => region.enabled !== false).length;
+    const uncertain = regions.filter(region => region.pending && !region.reviewed).length;
     const hasSpeakers = regions.some(region => region.speaker !== undefined);
     const opening = notice === "loading" || notice === "exampleLoading";
     const message = opening ? notice : scanStatus || notice;
@@ -108,14 +114,15 @@
     importPanel.hidden = !!bitmap;
     preview.hidden = !bitmap;
     workspace.toggleAttribute("data-loaded", !!bitmap);
-    scan.disabled = !!scanStatus || exporting;
+    scan.disabled = opening || !!scanStatus || exporting;
     undo.disabled = history.length === 1;
     clear.disabled = !count;
     save.disabled = !count || exporting || !!scanStatus;
     status.hidden = !message && !bitmap;
     status.toggleAttribute("data-error", errors.has(message));
     const summary = showMasks ? language.masks(count) : language.reviewed(count, regions.length);
-    feedback.textContent = message ? language[message] : regions.length ? summary : language.ready;
+    const details = message ? language[message] : regions.length ? summary : language.ready;
+    feedback.textContent = details + (uncertain && !scanStatus && !opening ? " " + language.pendingNames(uncertain) : "");
     dimensions.textContent = bitmap ? bitmap.width + " × " + bitmap.height + " px" : "";
   }
 
@@ -181,9 +188,9 @@
       target.lineWidth = 1.3 * unit;
     }
     for (const region of ordered) {
-      const { x, y, width: w, height: h, enabled } = region;
+      const { x, y, width: w, height: h, enabled, pending, reviewed } = region;
       if (review) {
-        target.strokeStyle = enabled === false ? "#5d5b5399" : "#a73925";
+        target.strokeStyle = pending && !reviewed ? "#906628" : enabled === false ? "#5d5b5399" : "#a73925";
         if (enabled !== false) {
           target.fillStyle = "#a739252c";
           target.fillRect(x, y, w, h);
@@ -231,7 +238,7 @@
   function getWorker() {
     if (!workerPromise) {
       const assets = new URL("assets/ocr/", document.baseURI);
-      workerPromise = Tesseract.createWorker(["eng", "chi_sim"], Tesseract.OEM.LSTM_ONLY, {
+      workerPromise = Tesseract.createWorker(ocrLanguages, Tesseract.OEM.LSTM_ONLY, {
         workerPath: new URL("worker.min.js", assets).href,
         corePath: new URL("tesseract-core-lstm.wasm.js", assets).href,
         langPath: new URL("lang", assets).href,
@@ -248,34 +255,74 @@
     return workerPromise;
   }
 
-  async function readNicknames(sample, boxes, current) {
+  async function readCrops(image, sample, boxes, current, {
+    highlighted = false, language, messages = [], participants = [],
+  } = {}) {
     const worker = await getWorker();
-    const labels = new Map();
+    const readings = new Map();
     const crop = document.createElement("canvas");
     const target = crop.getContext("2d");
+    const sx = image.width / sample.width;
+    const sy = image.height / sample.height;
+    const marginX = highlighted ? 0 : 4;
+    const marginY = highlighted ? 0 : 3;
     try {
+      if (language) await worker.reinitialize(language, Tesseract.OEM.LSTM_ONLY);
       await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE });
       for (const box of boxes) {
         if (!current()) break;
-        const x = Math.max(0, box.x0 - 3);
-        const y = Math.max(0, box.y0 - 3);
-        const width = Math.min(sample.width, box.x1 + 3) - x;
-        const height = Math.min(sample.height, box.y1 + 3) - y;
-        const scale = Math.max(1, Math.min(4, 60 / height));
+        const x = Math.floor(Math.max(0, box.x0 - marginX) * sx);
+        const y = Math.floor(Math.max(0, box.y0 - marginY) * sy);
+        const width = Math.ceil(Math.min(sample.width, box.x1 + marginX) * sx) - x;
+        const height = Math.ceil(Math.min(sample.height, box.y1 + marginY) * sy) - y;
+        if (width <= 0 || height <= 0) continue;
+        const desiredHeight = highlighted && !box.outlined && !box.addressPrefix ? 112 : 60;
+        const scale = Math.min(4, 4096 / width, Math.max(1, desiredHeight / height));
         crop.width = Math.ceil(width * scale) + 16;
         crop.height = Math.ceil(height * scale) + 20;
         target.fillStyle = "#fff";
         target.fillRect(0, 0, crop.width, crop.height);
-        target.drawImage(sample, x, y, width, height, 8, 10, width * scale, height * scale);
-        const { data } = await worker.recognize(crop);
-        if (data.text.trim() && data.confidence >= 45) labels.set(box, data.text.trim());
+        target.drawImage(image, x, y, width, height, 8, 10, width * scale, height * scale);
+        const intoSample = bounds => ({
+          x0: (x + (bounds.x0 - 8) / scale) / sx,
+          y0: (y + (bounds.y0 - 10) / scale) / sy,
+          x1: (x + (bounds.x1 - 8) / scale) / sx,
+          y1: (y + (bounds.y1 - 10) / scale) / sy,
+        });
+        const inMessage = highlighted && !box.outlined && messages.some(message => overlappingName(message, box));
+        const ink = highlighted && HighlightMentions.cleanCrop(target, 8, 10,
+          Math.floor(width * scale), Math.floor(height * scale), box.outlined, box.addressPrefix);
+        const clause = inMessage && !box.addressPrefix && HighlightMentions.firstClause(ink);
+        const prefix = clause && { ...intoSample(clause.box), addressPrefix: true };
+        const { data } = await worker.recognize(crop, {}, { text: false, blocks: true });
+        const lines = SensitiveText.readLines(data.blocks);
+        if (lines.length !== 1) {
+          if (prefix) readings.set(box, { prefix, confidence: 0 });
+          continue;
+        }
+        const line = lines[0];
+        const confidence = line.confidence ?? data.confidence;
+        const name = ink && HighlightMentions.readName(line, confidence, ink, {
+          clause, participants: inMessage ? participants : undefined, includeEmoji: inMessage && !box.addressPrefix,
+        });
+        line.box = intoSample(line.box);
+        line.spans = line.spans.map(span => ({ ...span, box: span.box && intoSample(span.box) }));
+        readings.set(box, { line, confidence, prefix,
+          name: name && { ...intoSample(name), includesEmoji: name.includesEmoji } });
       }
     } finally {
       crop.width = 0;
       crop.height = 0;
-      await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+      try {
+        if (language) await worker.reinitialize(ocrLanguages, Tesseract.OEM.LSTM_ONLY);
+        await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+      } catch (error) {
+        workerPromise = undefined;
+        await worker.terminate();
+        throw error;
+      }
     }
-    return labels;
+    return readings;
   }
 
   function contains(outer, inner) {
@@ -294,9 +341,16 @@
     return w > 0 && h > 0 && w * h >= .8 * Math.max(area(a), area(b));
   }
 
-  function detections(lines, visual, image, sample) {
+  function overlappingName(a, b) {
+    const width = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+    const height = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+    const smaller = Math.min((a.x1 - a.x0) * (a.y1 - a.y0), (b.x1 - b.x0) * (b.y1 - b.y0));
+    return width > 0 && height > 0 && width * height >= .83 * smaller;
+  }
+
+  function detections(lines, visual, inlineNames, image, sample) {
     const regions = SensitiveText.findRegions(lines, image, sample);
-    function add(box, type, margin, enabled = true) {
+    function add(box, type, margin, enabled = true, pending = false) {
       const region = SensitiveText.scaleBox(box, type, image, sample, margin);
       if (!region) return;
       const speaker = visual.speakerIds.get(box);
@@ -306,11 +360,12 @@
         if (speaker !== undefined && existing.type === type) existing.speaker ??= speaker;
         return;
       }
-      regions.push({ ...region, enabled, speaker });
+      regions.push({ ...region, enabled, speaker, pending });
     }
-    for (const box of visual.avatars) add(box, "avatar", 4);
+    if (visual.groupTitle) add(visual.groupTitle, "name", 0);
+    for (const box of visual.avatars) add(box, "avatar", box.clipped ? 0 : 4);
     for (const box of visual.associatedNames) add(box, "name", 2);
-    for (const box of ChatMentions.findRegions(lines, visual, sample)) add(box, "name", 0);
+    for (const { box, pending } of inlineNames) add(box, "name", 0, !pending, pending);
     const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
     const nicknames = visual.profiles.map(profile => profile.name).filter(name => name?.line);
     for (const line of lines) {
@@ -331,6 +386,7 @@
     const image = bitmap;
     if (!image) return;
     const version = ++scanVersion;
+    notice = "";
     scanStatus = "ocrLoading";
     refresh();
 
@@ -358,14 +414,67 @@
         scanStatus = "visionRunning";
         refresh();
         const current = () => version === scanVersion;
-        const visual = await LocalVision.findRegions(sample, text || [], await model, current,
-          text && (boxes => readNicknames(sample, boxes, current)));
+        const read = boxes => readCrops(image, sample, boxes, current);
+        const readNicknames = async boxes => {
+          const readings = await read(boxes);
+          return new Map([...readings].filter(([, reading]) => reading.confidence >= 45)
+            .map(([box, { line }]) => [box, line.text.trim()]));
+        };
+        const lines = text || [];
+        const visual = await LocalVision.findRegions(sample, lines, await model, current, text && readNicknames);
         if (version !== scanVersion) return;
+        const inlineNames = await ChatMentions.refineRegions(lines, visual, sample, async boxes => {
+          scanStatus = "ocrRefining";
+          refresh();
+          return read(boxes).catch(() => new Map());
+        });
+        if (version !== scanVersion) return;
+        if (text) {
+          const covered = [...visual.avatars, ...visual.associatedNames];
+          if (visual.groupTitle) covered.push(visual.groupTitle);
+          const alreadyRead = inlineNames.filter(name => !name.pending).map(({ box }) => box);
+          const cropped = HighlightMentions.unreadCrops(visual.colorCrops, covered).filter(box =>
+            (!box.outlined && visual.messages.some(message => overlappingName(message, box))) ||
+            HighlightMentions.unreadCrops([box], alreadyRead).length);
+          if (cropped.length) {
+            scanStatus = "ocrRefining";
+            refresh();
+            const participants = ChatMentions.participantLabels(lines, visual.participantNames);
+            const readHighlights = (boxes, language) => readCrops(image, sample, boxes, current,
+              { highlighted: true, language, messages: visual.messages, participants }).catch(() => new Map());
+            const highlights = await readHighlights(cropped);
+            if (!current()) return;
+            const found = ChatMentions.croppedRegions(lines, visual, sample, highlights);
+            if (lines.some(line => /\p{Script=Han}/u.test(line.text))) {
+              const retry = HighlightMentions.unreadCrops(cropped, found).filter(box => {
+                const reading = highlights.get(box);
+                return !box.outlined && (!reading || reading.confidence < 72) &&
+                  (visual.messages.some(message => overlappingName(message, box)) || /^@/.test(reading?.line?.text ?? ""));
+              });
+              const prefixes = [...highlights.values()].flatMap(({ prefix }) => prefix &&
+                !found.some(box => overlappingName(box, prefix)) ? [prefix] : []);
+              if (retry.length || prefixes.length) {
+                const chinese = await readHighlights([...retry, ...prefixes], "chi_sim");
+                if (!current()) return;
+                found.push(...ChatMentions.croppedRegions(lines, visual, sample, chinese));
+              }
+            }
+            found.sort((a, b) => Number(!!b.includesEmoji) - Number(!!a.includesEmoji) ||
+              (a.x1 - a.x0) * (a.y1 - a.y0) - (b.x1 - b.x0) * (b.y1 - b.y0));
+            for (const box of found) {
+              const prior = inlineNames.findIndex(name => overlappingName(name.box, box));
+              if (prior < 0) inlineNames.push({ box, pending: false });
+              else if (inlineNames[prior].pending || (box.includesEmoji && !inlineNames[prior].box.includesEmoji)) {
+                inlineNames[prior] = { box, pending: false };
+              }
+            }
+          }
+        }
 
         const previous = masks();
         const manual = previous.filter(region => !region.type);
         const reviewed = previous.filter(region => region.type && region.reviewed);
-        const detected = detections(text || [], visual, image, sample).map(region => {
+        const detected = detections(lines, visual, inlineNames, image, sample).map(region => {
           const decision = reviewed.find(other => other.type === region.type && similar(other, region));
           return decision ? { ...region, enabled: decision.enabled, reviewed: true } : region;
         });
@@ -373,6 +482,7 @@
         if (next.length !== previous.length || next.some((region, index) => {
           const before = previous[index];
           return region.enabled !== before.enabled || region.type !== before.type || region.speaker !== before.speaker ||
+            region.pending !== before.pending ||
             !similar(region, before);
         })) {
           history.push(next);

@@ -1,5 +1,5 @@
 (() => {
-  const { boxForRange, runs } = typeof module === "undefined"
+  const { boxForRange, exactBoxForRange, runs } = typeof module === "undefined"
     ? window.SensitiveText : require("./sensitive-text.js");
   const han = /^\p{Script=Han}+$/u;
   const handleCharacter = /[\p{Script=Latin}\p{N}_]/u;
@@ -12,6 +12,7 @@
   const generic = /^(?:大家|大哥|大姐|大叔|大姨|小姐|老哥|老姐|先生|同学|老师|自己|我们|你们|他们|她们|我哥|我姐|你哥|你姐|他哥|她姐|他姐|夏天|高兴|白天|东方|王者|龙王)$/u;
   const namePart = /^[^我你他她它的了地得们这那与把在让去问说会要先再就还也跟给是来]+$/u;
   const leftAction = /(?:发给|转给|交给|联系|通知|告诉|问(?:了|问|一下|下)?|找(?:到)?|招呼|麻烦|辛苦|谢谢|多谢|拜托|安排|邀请|提醒|请教|转告|欢迎|约了|见到|叫|找|跟|和|让|给|向|由|请|等|帮|是)$/u;
+  const englishAddress = /\b(?:ask|tell|notify|ping|message|contact|thank|remind|let)\s+$/i;
   const leftTime = /(?:现在|刚才|刚刚|昨天|今天|明天|之前|后来)$/u;
   const rightAction = /^(?:现在|刚刚|刚才|已经|没有|今天|昨天|明天|稍后|马上|也在|也会|一起|确认|联系|回复|反馈|负责|对接|参加|打电话|发来|发给|发了|收到|提交|签字|到了|来了|回[来去]|过去|过来|帮忙|先(?:确认|联系|回复|[看去来回])|说过|说了|叫我|告诉)/u;
   const rightParticle = /^[说问想去在来也会要呢吗吧喊看做]/u;
@@ -42,7 +43,7 @@
     return x >= area.x0 && x < area.x1 && y >= area.y0 && y < area.y1;
   }
 
-  function aliasesFor(lines, areas) {
+  function participantLabels(lines, areas) {
     const values = new Set();
     for (const line of lines) {
       for (const area of areas) {
@@ -53,7 +54,22 @@
         if (text.length >= 2 && text.length <= 36 && /\p{L}/u.test(text) && !generic.test(text)) values.add(text);
       }
     }
-    return [...values].map(value => new RegExp(value.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), "giu"));
+    return [...values];
+  }
+
+  function aliasesFor(lines, areas) {
+    return participantLabels(lines, areas).map(value => new RegExp(value.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), "giu"));
+  }
+
+  function leadingAddress(text, participants) {
+    const comma = text.search(/[,，]/u);
+    if (comma < 2 || comma > 38) return null;
+    const prefix = text.slice(0, comma).trimEnd();
+    const value = compact(prefix).text;
+    if (generic.test(value)) return null;
+    const known = participants.some(label => label.toLowerCase() === value.toLowerCase());
+    const familiar = [...value.matchAll(nickname)].some(match => match[0] === value);
+    return known || familiar ? { end: prefix.length, comma, known, isolated: !text.slice(comma + 1).trim() } : null;
   }
 
   function leftContext(text, start) {
@@ -69,6 +85,11 @@
     return Number(rightParticle.test(suffix));
   }
 
+  function hasWordBoundaries(text, start, end) {
+    return !(start && handleCharacter.test(text[start]) && handleCharacter.test(text[start - 1])) &&
+      !(end < text.length && handleCharacter.test(text[end - 1]) && handleCharacter.test(text[end]));
+  }
+
   function mentions(text, aliases, inChat) {
     const found = [];
     function add(start, value, priority) {
@@ -78,12 +99,13 @@
       for (const match of text.matchAll(alias)) {
         const start = match.index;
         const end = start + match[0].length;
-        if ((handleCharacter.test(match[0][0]) && start && handleCharacter.test(text[start - 1])) ||
-          (handleCharacter.test(match[0].at(-1)) && end < text.length && handleCharacter.test(text[end]))) continue;
-        if (inChat || leftContext(text, start) === 2) add(start, match[0], 90);
+        if (!hasWordBoundaries(text, start, end)) continue;
+        if (inChat || leftContext(text, start) === 2 || englishAddress.test(text.slice(0, start))) {
+          add(start, match[0], 90);
+        }
       }
     }
-    for (const match of text.matchAll(/(?<![\p{Script=Latin}\p{N}_.%+-])@\s*([\p{Script=Latin}\p{N}_][\p{Script=Latin}\p{N}_.-]{0,31}[\p{Script=Latin}\p{N}_]|\p{Script=Han}{1,8}(?=$|[\s,，.。!?！？、:：]))/gu)) {
+    for (const match of text.matchAll(/(?<![\p{Script=Latin}\p{N}_.%+-])@\s*([\p{Script=Latin}\p{N}_][\p{Script=Latin}\p{N}_.-]{0,31}[\p{Script=Latin}\p{N}_]|\p{Script=Han}{1,8}(?=$|[\p{So}\s,，.。!?！？、:：]))/gu)) {
       if (match[1].length > 2 && /^[0-9]+$/.test(match[1])) continue;
       add(match.index + match[0].lastIndexOf(match[1]), match[1], 95);
     }
@@ -131,15 +153,11 @@
     return selected;
   }
 
-  function hanGlyphs(line, run, canvas) {
-    const characters = [...line.text.slice(run.start, run.end).matchAll(/\S/gu)];
-    if (characters.length < 4 || !han.test(characters[0][0]) ||
-      characters.some(([value]) => !han.test(value) && !/^[,.!?:;，。！？：；、]$/u.test(value))) return null;
-    const padding = Math.max(1, Math.ceil(.36 * (run.box.x1 - run.box.x0) / characters.length));
-    const x = Math.max(0, Math.floor(run.box.x0) - padding);
-    const y = Math.max(0, Math.floor(run.box.y0) - 1);
-    const width = Math.min(canvas.width, Math.ceil(run.box.x1) + padding) - x;
-    const height = Math.min(canvas.height, Math.ceil(run.box.y1) + 1) - y;
+  function inkBand(box, canvas, padding, minX = 0, maxX = canvas.width) {
+    const x = Math.max(0, minX, Math.floor(box.x0) - padding);
+    const y = Math.max(0, Math.floor(box.y0) - 1);
+    const width = Math.min(canvas.width, maxX, Math.ceil(box.x1) + padding) - x;
+    const height = Math.min(canvas.height, Math.ceil(box.y1) + 1) - y;
     if (width < 20 || height < 8 || height > 160) return null;
     const { data } = canvas.getContext("2d").getImageData(x, y, width, height);
     const levels = new Uint8Array(width * height);
@@ -152,9 +170,18 @@
     const mode = counts.indexOf(Math.max(...counts));
     if (counts[mode] < .55 * levels.length) return null;
     const background = mode * 8 + 4;
+    const contrast = new Uint32Array(32);
+    for (const level of levels) contrast[Math.abs(level - background) >> 3]++;
+    // Ignore a few high-contrast outliers when estimating the text color.
+    let contrastBin = contrast.length - 1;
+    for (let pixels = 0; contrastBin > 0; contrastBin--) {
+      pixels += contrast[contrastBin];
+      if (pixels >= .025 * levels.length) break;
+    }
+    const inkThreshold = Math.max(28, .5 * contrastBin * 8);
     const rows = new Uint32Array(height);
     for (let i = 0; i < levels.length; i++) {
-      levels[i] = Number(Math.abs(levels[i] - background) >= 28);
+      levels[i] = Number(Math.abs(levels[i] - background) >= inkThreshold);
       rows[Math.floor(i / width)] += levels[i];
     }
     let top = rows.indexOf(Math.max(...rows));
@@ -169,8 +196,19 @@
     }
     const left = columns.findIndex(count => count > 0);
     const right = columns.findLastIndex(count => count > 0) + 1;
+    return { x, left, right, columns, y0: Math.max(y, y + top - 1), y1: Math.min(y + height, y + bottom + 1) };
+  }
+
+  function hanGlyphs(line, run, canvas, minX, maxX) {
+    const characters = [...line.text.slice(run.start, run.end).matchAll(/\S/gu)];
+    if (characters.length < 4 || !han.test(characters[0][0]) ||
+      characters.some(([value]) => !han.test(value) && !/^[,.!?:;，。！？：；、]$/u.test(value))) return null;
+    const padding = Math.max(1, Math.ceil(.36 * (run.box.x1 - run.box.x0) / characters.length));
+    const band = inkBand(run.box, canvas, padding, minX, maxX);
+    if (!band) return null;
+    const { left, right, columns } = band;
     const advance = (right - left) / (characters.length - (han.test(characters.at(-1)[0]) ? 0 : .65));
-    if (advance < 6 || advance > (bottom - top) * 1.8) return null;
+    if (advance < 6 || advance > (band.y1 - band.y0) * 1.8) return null;
     // Use the ink-free gaps only when they fit the same character spacing across the line.
     const edges = [left];
     let foundGaps = 0;
@@ -184,9 +222,9 @@
       edges.push(gap >= 0 ? gap : null);
       if (gap >= 0) foundGaps++;
     }
-    if (foundGaps < .66 * (characters.length - 1)) return null;
+    if (foundGaps <= .50 * (characters.length - 1)) return null;
     edges.push(right);
-    return { characters, edges, advance, x, y0: Math.max(y, y + top - 1), y1: Math.min(y + height, y + bottom + 1) };
+    return { characters, edges, advance, x: band.x, y0: band.y0, y1: band.y1 };
   }
 
   function boxAtGlyphs(grid, start, end, original) {
@@ -196,35 +234,188 @@
     if (grid.edges[first] === null || grid.edges[last + 1] === null) return original;
     const x0 = grid.x + grid.edges[first];
     const x1 = grid.x + grid.edges[last + 1];
-    if (Math.abs(x0 - original.x0) > .65 * grid.advance || Math.abs(x1 - original.x1) > .65 * grid.advance) return original;
+    if (Math.abs(x0 - original.x0) > .85 * grid.advance || Math.abs(x1 - original.x1) > .85 * grid.advance) return original;
     return { x0, y0: grid.y0, x1, y1: grid.y1 };
   }
 
-  function findRegions(lines, { avatars, messages, quoteBodies, participantNames }, canvas) {
-    const aliases = aliasesFor(lines, participantNames);
+  function ranges(line, start, end, aliases, inChat, minimum = 0) {
+    const { text, offsets } = compact(line.text.slice(start, end));
+    return mentions(text, aliases, inChat).filter(match => match.priority >= minimum).map(match => ({
+      from: start + offsets[match.start].start,
+      to: start + offsets[match.end - 1].end,
+    }));
+  }
+
+  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames }, aliases, canvas) {
     const quoteStarts = new Map(quoteBodies.map(({ line, start }) => [line, start]));
-    const regions = [];
+    const found = [];
     for (const line of lines) {
       const quoted = quoteStarts.has(line);
       for (const run of runs(line, avatars)) {
         const start = Math.max(run.start, quoteStarts.get(line) ?? 0);
         if (start >= run.end) continue;
-        const inChat = quoted || messages.some(message => inside(message, run.box));
+        const inChat = quoted || messages.some(message => inside(message, run.box)) || participantNames.some(name => {
+          const height = name.y1 - name.y0;
+          const drop = run.box.y0 - name.y1;
+          return drop >= 0 && drop <= 3 * height && Math.abs(run.box.x0 - name.x0) < height;
+        });
         if (!inChat && participantNames.some(name => inside(name, run.box))) continue;
-        const { text, offsets } = compact(line.text.slice(start, run.end));
-        const matches = mentions(text, aliases, inChat);
+        const matches = ranges(line, start, run.end, aliases, inChat);
         const grid = inChat && canvas && matches.length ? hanGlyphs(line, run, canvas) : null;
-        for (const match of matches) {
-          const from = start + offsets[match.start].start;
-          const to = start + offsets[match.end - 1].end;
-          const box = boxForRange(line, from, to);
-          if (box) regions.push(grid ? boxAtGlyphs(grid, from - run.start, to - run.start, box) : box);
-        }
+        const names = matches.flatMap(({ from, to }) => {
+          const estimate = boxForRange(line, from, to);
+          if (!estimate) return [];
+          const box = grid ? boxAtGlyphs(grid, from - run.start, to - run.start, estimate) : estimate;
+          return [{ from, to, box, exact: box !== estimate || !!exactBoxForRange(line, from, to) }];
+        });
+        const text = line.text.slice(start, run.end);
+        const mixed = /\p{Script=Han}/u.test(text) && /[\p{Script=Latin}\p{N}]/u.test(text);
+        const retry = mixed || names.some(name => !name.exact || line.spans.some(span => span.box &&
+          (span.end <= name.from || span.start >= name.to) &&
+          span.box.x0 < name.box.x1 && name.box.x0 < span.box.x1)) ||
+          (inChat && line.confidence < 75 && /\p{L}/u.test(text));
+        if (names.length || retry) found.push({ line, run, start, inChat, names, retry });
       }
     }
-    return regions;
+    return found;
   }
 
-  if (typeof module !== "undefined") module.exports = { findRegions };
-  else window.ChatMentions = { findRegions };
+  function comparable(text) {
+    return text.replace(/\s+/g, "").toLowerCase();
+  }
+
+  function alignName(entry, name, local) {
+    const first = entry.line.text;
+    const whole = comparable(first.slice(entry.run.start, entry.run.end));
+    const localText = comparable(local.text);
+    const word = comparable(first.slice(name.from, name.to));
+    let offset = comparable(first.slice(entry.run.start, name.from)).length;
+    if (whole !== localText) {
+      offset = localText.indexOf(word);
+      if (offset < 0 || offset !== localText.lastIndexOf(word) ||
+        whole.indexOf(word) !== whole.lastIndexOf(word)) return null;
+    }
+    // Convert an offset in the space-free text back to the worker's character spans.
+    const letters = [...local.text.matchAll(/\S/gu)];
+    const before = Array.from(localText.slice(0, offset)).length;
+    const count = Array.from(word).length;
+    const firstLetter = letters[before];
+    const lastLetter = letters[before + count - 1];
+    if (!firstLetter || !lastLetter) return null;
+    const from = firstLetter.index;
+    const to = lastLetter.index + lastLetter[0].length;
+    if (!hasWordBoundaries(local.text, from, to)) return null;
+    const box = exactBoxForRange(local, from, to);
+    const tolerance = entry.run.box.y1 - entry.run.box.y0;
+    if (!box || Math.abs(box.x0 + box.x1 - name.box.x0 - name.box.x1) > 2 * tolerance ||
+      Math.abs(box.y0 + box.y1 - name.box.y0 - name.box.y1) > tolerance) return null;
+    return { box, from, to };
+  }
+
+  function polishLocal(local, { box, from, to }, original, canvas) {
+    if (!canvas) return box;
+    const name = comparable(local.text.slice(from, to));
+    if (han.test(name)) {
+      // Apply the Han glyph grid within a contiguous Han run in mixed-script text.
+      for (const match of local.text.matchAll(/\p{Script=Han}+(?:\s+\p{Script=Han}+)*/gu)) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (start > from || end < to) continue;
+        const bounds = boxForRange(local, start, end);
+        if (!bounds) return box;
+        const before = local.spans.findLast(span => span.end <= start && span.box);
+        const after = local.spans.find(span => span.start >= end && span.box);
+        const left = before && before.box.x1 <= bounds.x0 ? Math.floor(before.box.x1) : 0;
+        const right = after && after.box.x0 > bounds.x0 ? Math.ceil(after.box.x0) : canvas.width;
+        const grid = hanGlyphs(local, { start, end, box: bounds }, canvas, left, right);
+        return grid ? boxAtGlyphs(grid, from - start, to - start, box) : box;
+      }
+    }
+    if (!/^\p{Script=Latin}+$/u.test(name)) return box;
+    const next = local.spans.find(span => span.start >= to && span.box);
+    if (!next || !han.test(local.text.slice(next.start, next.end))) return box;
+    const final = local.spans.findLast(span => span.end === to && span.box);
+    if (!final || [...local.text.slice(final.start, final.end)].length !== 1) return box;
+    const band = inkBand(local.box, canvas, 2);
+    if (!band) return box;
+    const height = band.y1 - band.y0;
+    const left = Math.round(Math.min(box.x0, original.x0) - band.x);
+    let x0 = box.x0;
+    let distance = Infinity;
+    for (let i = Math.max(0, left - Math.ceil(.25 * height));
+      i < band.columns.length && i <= left + .25 * height; i++) {
+      if (band.columns[i] === 0 && Math.abs(i - left) < distance) {
+        x0 = i + band.x;
+        distance = Math.abs(i - left);
+      }
+    }
+    const last = Math.max(0, Math.floor(final.box.x0 - band.x));
+    let ink = false;
+    for (let i = last; i < band.columns.length && i < last + 1.2 * height; i++) {
+      if (band.columns[i]) ink = true;
+      else if (ink) {
+        const x1 = i + band.x;
+        if (x1 > x0 && Math.abs(x1 - box.x1) <= .85 * height) {
+          return { x0, x1, y0: Math.min(box.y0, original.y0), y1: Math.max(box.y1, original.y1) };
+        }
+        break;
+      }
+    }
+    return box;
+  }
+
+  function findRegions(lines, layout, canvas) {
+    const aliases = aliasesFor(lines, layout.participantNames);
+    return readingRuns(lines, layout, aliases, canvas).flatMap(({ names }) => names.map(({ box }) => box));
+  }
+
+  async function refineRegions(lines, layout, canvas, readCrops) {
+    const aliases = aliasesFor(lines, layout.participantNames);
+    const entries = readingRuns(lines, layout, aliases, canvas);
+    const boxes = entries.filter(entry => entry.retry).map(({ run }) => run.box);
+    const crops = boxes.length ? await readCrops(boxes) : new Map();
+    return entries.flatMap(entry => {
+      const { run, line, names, start } = entry;
+      const reading = crops.get(run.box);
+      const local = reading?.confidence >= 55 ? reading.line : null;
+      const resolved = names.map(name => {
+        const aligned = local && alignName(entry, name, local);
+        if (aligned) return { box: polishLocal(local, aligned, name.box, canvas), pending: false };
+        if (name.exact) return { box: name.box, pending: false };
+        return { box: boxForRange(line, name.from, name.to, { wholeWords: true }), pending: true };
+      });
+      // A clearer crop can reveal a mention missed by the full-image pass.
+      if (!local || reading.confidence < 70) return resolved;
+      let localStart = 0;
+      if (start > run.start) {
+        const prefix = comparable(line.text.slice(run.start, start));
+        const colon = local.text.indexOf(":") + 1;
+        if (!colon || comparable(local.text.slice(0, colon)) !== prefix) return resolved;
+        localStart = colon;
+      }
+      for (const { from, to } of ranges(local, localStart, local.text.length, aliases, entry.inChat)) {
+        const raw = exactBoxForRange(local, from, to);
+        const box = raw && polishLocal(local, { box: raw, from, to }, raw, canvas);
+        if (box && inside(run.box, box) && !layout.participantNames.some(name => inside(name, box)) && !resolved.some(region =>
+          region.box.x0 < box.x1 && box.x0 < region.box.x1)) resolved.push({ box, pending: false });
+      }
+      return resolved;
+    });
+  }
+
+  function croppedRegions(lines, layout, canvas, readings) {
+    const aliases = aliasesFor(lines, layout.participantNames);
+    return [...readings].flatMap(([crop, { line, confidence, name }]) => {
+      if (name) return [name];
+      if (crop.outlined || confidence < 70 || !layout.messages.some(message => inside(message, crop))) return [];
+      return ranges(line, 0, line.text.length, aliases, true, 61).flatMap(({ from, to }) => {
+        const box = exactBoxForRange(line, from, to);
+        return box ? [polishLocal(line, { box, from, to }, box, canvas)] : [];
+      });
+    });
+  }
+
+  const scanner = { findRegions, refineRegions, croppedRegions, participantLabels, leadingAddress };
+  if (typeof module !== "undefined") module.exports = scanner;
+  else window.ChatMentions = scanner;
 })();

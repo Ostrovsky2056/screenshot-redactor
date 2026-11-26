@@ -82,7 +82,7 @@
         for (const line of paragraph.lines) {
           const parts = readLine(line.words);
           const boxes = parts.spans.filter(span => span.box).map(span => span.box);
-          if (boxes.length) lines.push({ ...parts, box: bounds(boxes) });
+          if (boxes.length) lines.push({ ...parts, box: bounds(boxes), confidence: line.confidence });
         }
       }
     }
@@ -127,12 +127,12 @@
     }));
   }
 
-  function boxForRange(line, start, end) {
+  function boxForRange(line, start, end, { wholeWords = false } = {}) {
     const boxes = [];
     for (const span of line.spans) {
       if (!span.box || span.end <= start || span.start >= end) continue;
       const { box } = span;
-      if (span.start >= start && span.end <= end) {
+      if (wholeWords || (span.start >= start && span.end <= end)) {
         boxes.push(box);
         continue;
       }
@@ -144,6 +144,19 @@
       boxes.push({ ...box, x0: box.x0 + from * unit, x1: box.x0 + to * unit });
     }
     return boxes.length ? bounds(boxes) : null;
+  }
+
+  function exactBoxForRange(line, start, end) {
+    let cursor = start;
+    const boxes = [];
+    for (const { start: left, end: right, box } of line.spans) {
+      if (right <= start || left >= end) continue;
+      if (!box || box.x1 <= box.x0 || box.y1 <= box.y0 || left < cursor || right > end ||
+        line.text.slice(cursor, left).trim()) return null;
+      boxes.push(box);
+      cursor = right;
+    }
+    return boxes.length && !line.text.slice(cursor, end).trim() ? bounds(boxes) : null;
   }
 
   function scaleBox(box, type, original, scan, margin = 3) {
@@ -169,7 +182,7 @@
     return regions;
   }
 
-  const scanner = { readLines, findRegions, scaleBox, runs, boxForRange };
+  const scanner = { readLines, findRegions, scaleBox, runs, boxForRange, exactBoxForRange };
   if (typeof module !== "undefined") module.exports = scanner;
   else window.SensitiveText = scanner;
 })();

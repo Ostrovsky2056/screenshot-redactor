@@ -182,3 +182,46 @@ test("links a quote to a recovered nickname only when the speaker is unambiguous
   matchQuoteSpeakers([first, second], [ambiguous], ids, new Map([[first.name.box, "山茶"]]));
   assert.equal(ids.has(ambiguous.box), false);
 });
+
+test("covers a group title and the visible part of a repeated avatar at the pane edge", () => {
+  const pic = frame();
+  const portrait = [176, 197, 231];
+  pic.avatar(22, 22, portrait);
+  pic.fill(0, 0, pic.width, 50, [247, 247, 247]);
+  pic.label("Studio room (4)", 24, 17);
+  pic.fill(81, 50, 266, 44, [230, 231, 235]);
+  pic.label("First", 99, 68);
+  for (const [y, tone] of [[144, portrait], [284, [205, 169, 122]]]) {
+    pic.avatar(22, y, tone);
+    pic.label("Mira", 88, y + 1);
+    pic.fill(81, y + 25, 223, 52, [230, 231, 235], 8);
+    pic.label("Message", 100, y + 43);
+  }
+  const result = findRegions(pic, pic.lines, model);
+  assert.equal(result.groupTitle.x1, boxForRange(pic.lines[0], 0, 11).x1);
+  const fragment = result.avatars.find(box => box.clipped);
+  assert(fragment);
+  assert.deepEqual([fragment.y0, fragment.y1], [50, 70]);
+  const reference = result.avatars.find(box => box.y0 === 144);
+  assert.equal(result.speakerIds.get(fragment), result.speakerIds.get(reference));
+});
+
+test("recovers a narrow repeated avatar and uses the same mask size as the other full avatars", () => {
+  const pic = frame();
+  const portrait = [168, 190, 229];
+  for (const [y, tone] of [[24, portrait], [154, [223, 175, 130]]]) {
+    pic.avatar(22, y, tone);
+    pic.fill(85, y + 23, 214, 52, [230, 231, 235], 8);
+    pic.label("Message", 105, y + 44);
+  }
+  pic.avatar(22, 307, portrait);
+  pic.fill(22, 307, 8, 48, [247, 247, 247]);
+  pic.fill(62, 307, 8, 48, [247, 247, 247]);
+  pic.fill(100, 331, 48, 50, [96, 82, 133], 9);
+  const result = findRegions(pic, pic.lines, model);
+  assert.equal(result.avatars.length, 3);
+  assert(result.avatars.every(box => box.x1 - box.x0 === 48 && box.y1 - box.y0 === 48));
+  const matched = result.avatars.filter(box => box.y0 === 24 || box.y0 === 307);
+  assert.equal(matched.length, 2);
+  assert.equal(new Set(matched.map(box => result.speakerIds.get(box))).size, 1);
+});
