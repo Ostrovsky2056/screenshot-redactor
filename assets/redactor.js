@@ -1,5 +1,6 @@
 (() => {
   const maskColor = "#191a16";
+  const speakerColors = ["#355665", "#7b4a35", "#395840", "#51466d", "#69404f", "#465674"];
   const previewLimit = 1600;
   const maxSide = 16_384;
   const maxPixels = 40_000_000;
@@ -8,11 +9,11 @@
       loading: "Opening the screenshot…",
       ready: "Drag on the image to cover a region.",
       masks: count => count + (count === 1 ? " region covered" : " regions covered"),
-      reviewed: count => count + " selected. Click a box to toggle it, or drag to add another.",
+      reviewed: (count, total) => count + " of " + total + " selected. Click a dashed box to toggle it, or drag to add one.",
       ocrLoading: "Loading the on-device recognition models…",
       ocrRunning: "Recognizing text on this device…",
       visionRunning: "Looking for avatars and faces on this device…",
-      noMatches: "No matching regions found. Drag to cover any sensitive details you see.",
+      noMatches: "No regions detected. Drag to cover any details yourself.",
       scanPartial: "Part of the scan could not finish. Review the boxes and add missing masks.",
       ocrFailed: "Recognition failed. Try scanning again or draw your own masks.",
       unsupported: "Choose a PNG, JPEG, or WebP image.",
@@ -27,11 +28,11 @@
       loading: "正在打开截图…",
       ready: "在图上拖出矩形，遮挡敏感区域。",
       masks: count => "已遮挡 " + count + " 处",
-      reviewed: count => "已框选 " + count + " 处。点击框可取消或恢复，拖动可补画。",
+      reviewed: (count, total) => "已框选 " + count + " 处，共 " + total + " 个候选。点击虚线框切换选择，拖动可补画。",
       ocrLoading: "正在加载本地识别模型…",
       ocrRunning: "正在浏览器本地识别…",
       visionRunning: "正在本地查找头像和人脸…",
-      noMatches: "未找到符合规则的内容。可拖动补画需要遮挡的区域。",
+      noMatches: "未识别出可框选的区域，可以拖动补画。",
       scanPartial: "部分识别没有完成。请核对框选结果并补画遗漏的区域。",
       ocrFailed: "识别失败，可重新识别或手动补画。",
       unsupported: "请选择 PNG、JPEG 或 WebP 图片。",
@@ -55,6 +56,7 @@
   const toolbar = document.querySelector("#toolbar");
   const styleBar = document.querySelector("#style-bar");
   const style = document.querySelector("#mask-style");
+  const speakerStyle = document.querySelector("#speaker-mask-style");
   const previewMasks = document.querySelector("#mask-preview");
   const workspace = document.querySelector("#workspace");
   const importPanel = document.querySelector("#import-panel");
@@ -76,6 +78,7 @@
   let scanVersion = 0;
   let scanStatus = "";
   let showMasks = false;
+  let preferredStyle = "";
 
   function masks() {
     return history[history.length - 1];
@@ -85,20 +88,25 @@
     const language = messages[document.documentElement.lang] || messages.en;
     const regions = masks();
     const count = regions.filter(region => region.enabled !== false).length;
+    const hasSpeakers = regions.some(region => region.speaker !== undefined);
     const message = notice === "loading" ? notice : scanStatus || notice;
     toolbar.hidden = !bitmap;
     styleBar.hidden = !bitmap;
+    speakerStyle.hidden = !hasSpeakers;
+    speakerStyle.disabled = !hasSpeakers;
+    const defaultStyle = hasSpeakers ? "speakers" : "ink";
+    style.value = preferredStyle && (preferredStyle !== "speakers" || hasSpeakers) ? preferredStyle : defaultStyle;
     previewMasks.setAttribute("aria-pressed", String(showMasks));
     importPanel.hidden = !!bitmap;
     preview.hidden = !bitmap;
     workspace.toggleAttribute("data-loaded", !!bitmap);
     scan.disabled = !!scanStatus || exporting;
     undo.disabled = history.length === 1;
-    clear.disabled = !regions.length;
+    clear.disabled = !count;
     save.disabled = !count || exporting || !!scanStatus;
     status.hidden = !message && !bitmap;
     status.toggleAttribute("data-error", errors.has(message));
-    const summary = showMasks ? language.masks(count) : language.reviewed(count);
+    const summary = showMasks ? language.masks(count) : language.reviewed(count, regions.length);
     feedback.textContent = message ? language[message] : regions.length ? summary : language.ready;
     dimensions.textContent = bitmap ? bitmap.width + " × " + bitmap.height + " px" : "";
   }
@@ -111,7 +119,31 @@
     return;
   }
 
-  function coverRegion(target, { x, y, width, height }, appearance) {
+  function speakerLabel(index) {
+    let label = "";
+    for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) {
+      label = String.fromCharCode(65 + (value - 1) % 26) + label;
+    }
+    return label;
+  }
+
+  function coverRegion(target, { x, y, width, height, speaker }, appearance) {
+    if (appearance === "speakers" && speaker !== undefined) {
+      target.fillStyle = speakerColors[speaker % speakerColors.length];
+      target.fillRect(x, y, width, height);
+      const label = speakerLabel(speaker);
+      const size = Math.floor(Math.min(height * .65, (width - 3) / label.length));
+      if (size >= 7) {
+        target.save();
+        target.fillStyle = "#f4f1e9";
+        target.font = "700 " + size + "px system-ui, sans-serif";
+        target.textAlign = "center";
+        target.textBaseline = "middle";
+        target.fillText(label, x + width / 2, y + height / 2, width - 2);
+        target.restore();
+      }
+      return;
+    }
     target.fillStyle = appearance === "paper" ? "#f4f1e9" : maskColor;
     target.fillRect(x, y, width, height);
     if (appearance !== "pixels") return;
@@ -134,25 +166,26 @@
     target.clearRect(0, 0, width, height);
     target.drawImage(image, 0, 0, width, height);
     target.setTransform(width / image.width, 0, 0, height / image.height, 0, 0);
-    for (const region of regions) {
+    const ordered = review ? [...regions].sort((a, b) => area(b) - area(a)) : regions;
+    if (review) {
+      const unit = image.width / (target.canvas.clientWidth || width);
+      target.setLineDash([4 * unit, 3 * unit]);
+      target.lineWidth = 1.3 * unit;
+    }
+    for (const region of ordered) {
       const { x, y, width: w, height: h, enabled } = region;
       if (review) {
-        target.save();
-        const unit = image.width / width;
-        target.strokeStyle = enabled === false ? "#5d5b53" : "#a73925";
-        target.lineWidth = 1.7 * unit;
-        if (enabled === false) {
-          target.setLineDash([4 * unit, 3 * unit]);
-        } else {
-          target.fillStyle = "#a7392536";
+        target.strokeStyle = enabled === false ? "#5d5b5399" : "#a73925";
+        if (enabled !== false) {
+          target.fillStyle = "#a739252c";
           target.fillRect(x, y, w, h);
         }
         target.strokeRect(x, y, w, h);
-        target.restore();
       } else if (enabled !== false) {
         coverRegion(target, region, appearance);
       }
     }
+    if (review) target.setLineDash([]);
     if (draft) {
       target.fillStyle = "#191a16bb";
       target.fillRect(draft.x, draft.y, draft.width, draft.height);
@@ -185,6 +218,8 @@
     redraw();
   }
 
+  new ResizeObserver(redraw).observe(preview);
+
   function getWorker() {
     if (!workerPromise) {
       const assets = new URL("assets/ocr/", document.baseURI);
@@ -205,10 +240,81 @@
     return workerPromise;
   }
 
+  async function readNicknames(sample, boxes, current) {
+    const worker = await getWorker();
+    const labels = new Map();
+    const crop = document.createElement("canvas");
+    const target = crop.getContext("2d");
+    try {
+      await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE });
+      for (const box of boxes) {
+        if (!current()) break;
+        const x = Math.max(0, box.x0 - 3);
+        const y = Math.max(0, box.y0 - 3);
+        const width = Math.min(sample.width, box.x1 + 3) - x;
+        const height = Math.min(sample.height, box.y1 + 3) - y;
+        const scale = Math.max(1, Math.min(4, 60 / height));
+        crop.width = Math.ceil(width * scale) + 16;
+        crop.height = Math.ceil(height * scale) + 20;
+        target.fillStyle = "#fff";
+        target.fillRect(0, 0, crop.width, crop.height);
+        target.drawImage(sample, x, y, width, height, 8, 10, width * scale, height * scale);
+        const { data } = await worker.recognize(crop);
+        if (data.text.trim() && data.confidence >= 45) labels.set(box, data.text.trim());
+      }
+    } finally {
+      crop.width = 0;
+      crop.height = 0;
+      await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+    }
+    return labels;
+  }
+
   function contains(outer, inner) {
     return outer.x <= inner.x && outer.y <= inner.y &&
       outer.x + outer.width >= inner.x + inner.width &&
       outer.y + outer.height >= inner.y + inner.height;
+  }
+
+  function area(region) {
+    return region.width * region.height;
+  }
+
+  function similar(a, b) {
+    const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+    const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+    return w > 0 && h > 0 && w * h >= .8 * Math.max(area(a), area(b));
+  }
+
+  function detections(lines, visual, image, sample) {
+    const regions = SensitiveText.findRegions(lines, image, sample);
+    function add(box, type, margin, enabled = true) {
+      const region = SensitiveText.scaleBox(box, type, image, sample, margin);
+      if (!region) return;
+      const speaker = visual.speakerIds.get(box);
+      const existing = regions.find(other => similar(other, region) || (contains(other, region) &&
+        (type === "name" || other.enabled !== false || (type === "graphic" && other.type === "text"))));
+      if (existing) {
+        if (speaker !== undefined && existing.type === type) existing.speaker ??= speaker;
+        return;
+      }
+      regions.push({ ...region, enabled, speaker });
+    }
+    for (const box of visual.avatars) add(box, "avatar", 4);
+    for (const box of visual.associatedNames) add(box, "name", 2);
+    for (const box of ChatMentions.findRegions(lines, visual, sample)) add(box, "name", 0);
+    const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
+    for (const line of lines) {
+      const quoteStart = quoteStarts.get(line) ?? 0;
+      for (const { box, start, end } of SensitiveText.runs(line, visual.avatars)) {
+        if (end <= quoteStart) continue;
+        const textBox = start < quoteStart ? SensitiveText.boxForRange(line, quoteStart, end) : box;
+        if (textBox) add(textBox, "text", 0, false);
+      }
+    }
+    for (const box of visual.messages) add(box, "bubble", 0, false);
+    for (const box of visual.graphics) add(box, "graphic", 0, false);
+    return regions;
   }
 
   function scanCurrent() {
@@ -241,25 +347,25 @@
         if (version !== scanVersion) return;
         scanStatus = "visionRunning";
         refresh();
-        const visual = await LocalVision.findRegions(sample, text || [], await model, () => version === scanVersion);
+        const current = () => version === scanVersion;
+        const visual = await LocalVision.findRegions(sample, text || [], await model, current,
+          text && (boxes => readNicknames(sample, boxes, current)));
         if (version !== scanVersion) return;
 
         const previous = masks();
         const manual = previous.filter(region => !region.type);
-        const candidates = SensitiveText.findRegions(text || [], image, sample);
-        for (const box of visual.avatars) {
-          const region = SensitiveText.scaleBox(box, "avatar", image, sample, 4);
-          if (region) candidates.push(region);
-        }
-        for (const box of visual.associatedNames) {
-          const region = SensitiveText.scaleBox(box, "name", image, sample);
-          if (region && !candidates.some(existing => contains(existing, region) || contains(region, existing))) {
-            candidates.push(region);
-          }
-        }
-        const detected = candidates.filter(region => !manual.some(mask => contains(mask, region)));
-        if (detected.length || manual.length !== previous.length) {
-          history.push([...manual, ...detected]);
+        const reviewed = previous.filter(region => region.type && region.reviewed);
+        const detected = detections(text || [], visual, image, sample).map(region => {
+          const decision = reviewed.find(other => other.type === region.type && similar(other, region));
+          return decision ? { ...region, enabled: decision.enabled, reviewed: true } : region;
+        });
+        const next = [...manual, ...detected];
+        if (next.length !== previous.length || next.some((region, index) => {
+          const before = previous[index];
+          return region.enabled !== before.enabled || region.type !== before.type || region.speaker !== before.speaker ||
+            !similar(region, before);
+        })) {
+          history.push(next);
           redraw();
         }
         notice = !text || visual.faceScanIncomplete ? "scanPartial" : detected.length ? "" : "noMatches";
@@ -327,9 +433,19 @@
     const bounds = preview.getBoundingClientRect();
     const clamp = fraction => Math.min(1, Math.max(0, fraction));
     return {
-      x: clamp((event.clientX - bounds.left) / bounds.width) * bitmap.width,
-      y: clamp((event.clientY - bounds.top) / bounds.height) * bitmap.height,
+      x: clamp((event.clientX - bounds.left - preview.clientLeft) / preview.clientWidth) * bitmap.width,
+      y: clamp((event.clientY - bounds.top - preview.clientTop) / preview.clientHeight) * bitmap.height,
     };
+  }
+
+  function candidateAt(regions, position) {
+    const point = { ...position, width: 0, height: 0 };
+    let hit = -1;
+    for (const [index, region] of regions.entries()) {
+      if (showMasks && region.enabled === false) continue;
+      if (contains(region, point) && (hit === -1 || area(region) <= area(regions[hit]))) hit = index;
+    }
+    return hit;
   }
 
   preview.addEventListener("pointerdown", event => {
@@ -337,10 +453,15 @@
     const start = position(event);
     drag = { id: event.pointerId, start, end: start, clientX: event.clientX, clientY: event.clientY };
     preview.setPointerCapture(event.pointerId);
+    preview.removeAttribute("data-candidate");
   });
 
   preview.addEventListener("pointermove", event => {
-    if (drag?.id !== event.pointerId) return;
+    if (!drag) {
+      preview.toggleAttribute("data-candidate", !!bitmap && candidateAt(masks(), position(event)) !== -1);
+      return;
+    }
+    if (drag.id !== event.pointerId) return;
     drag.end = position(event);
     redraw();
   });
@@ -351,10 +472,11 @@
     const isClick = Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) < 4;
     if (isClick) {
       const regions = masks();
-      const point = { ...end, width: 0, height: 0 };
-      let hit = regions.length - 1;
-      while (hit >= 0 && !contains(regions[hit], point)) hit--;
-      if (hit !== -1) history.push(regions.map((region, index) => index === hit ? { ...region, enabled: region.enabled === false } : region));
+      const hit = candidateAt(regions, end);
+      if (hit !== -1) {
+        history.push(regions.map((region, index) => index === hit
+          ? { ...region, enabled: region.enabled === false, reviewed: true } : region));
+      }
     } else {
       const region = rectangle(drag.start, end);
       if (region) history.push([...masks(), region]);
@@ -371,6 +493,7 @@
 
   preview.addEventListener("pointercancel", cancelDrag);
   preview.addEventListener("lostpointercapture", cancelDrag);
+  preview.addEventListener("pointerleave", () => preview.removeAttribute("data-candidate"));
 
   choose.addEventListener("click", () => input.click());
   replace.addEventListener("click", () => input.click());
@@ -422,13 +545,13 @@
   });
 
   style.addEventListener("change", () => {
+    preferredStyle = style.value;
     showMasks = true;
     edited();
   });
 
   clear.addEventListener("click", () => {
-    if (!masks().length) return;
-    history.push([]);
+    history.push(masks().map(region => ({ ...region, enabled: false, reviewed: true })));
     edited();
   });
 

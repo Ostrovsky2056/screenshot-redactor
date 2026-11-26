@@ -89,6 +89,63 @@
     return lines;
   }
 
+  function runs(line, excludedAreas = []) {
+    const groups = [];
+    let group;
+    for (const span of line.spans) {
+      if (!span.box) continue;
+      const covered = excludedAreas.some(area => {
+        const { x0, y0, x1, y1 } = span.box;
+        const width = Math.min(x1, area.x1) - Math.max(x0, area.x0);
+        const height = Math.min(y1, area.y1) - Math.max(y0, area.y0);
+        const smaller = Math.min((x1 - x0) * (y1 - y0), (area.x1 - area.x0) * (area.y1 - area.y0));
+        return width > 0 && height > 0 && width * height >= .5 * smaller;
+      });
+      if (covered) {
+        // OCR may read details in an avatar or join it to another element.
+        group = null;
+        continue;
+      }
+      const previous = group?.at(-1)?.box;
+      if (previous) {
+        const height = Math.max(previous.y1 - previous.y0, span.box.y1 - span.box.y0);
+        const verticalOverlap = Math.min(previous.y1, span.box.y1) - Math.max(previous.y0, span.box.y0);
+        const gap = span.box.x0 - previous.x1;
+        const space = line.text.slice(group.at(-1).end, span.start);
+        if (gap > 1.6 * height || (space && verticalOverlap <= 0)) group = null;
+      }
+      if (!group) {
+        group = [];
+        groups.push(group);
+      }
+      group.push(span);
+    }
+    return groups.map(spans => ({
+      start: spans[0].start,
+      end: spans.at(-1).end,
+      box: bounds(spans.map(span => span.box)),
+    }));
+  }
+
+  function boxForRange(line, start, end) {
+    const boxes = [];
+    for (const span of line.spans) {
+      if (!span.box || span.end <= start || span.start >= end) continue;
+      const { box } = span;
+      if (span.start >= start && span.end <= end) {
+        boxes.push(box);
+        continue;
+      }
+      // OCR can supply a word box without individual glyph boxes. Crop the matched portion.
+      const size = Array.from(line.text.slice(span.start, span.end)).length;
+      const from = Array.from(line.text.slice(span.start, Math.max(start, span.start))).length;
+      const to = Array.from(line.text.slice(span.start, Math.min(end, span.end))).length;
+      const unit = (box.x1 - box.x0) / size;
+      boxes.push({ ...box, x0: box.x0 + from * unit, x1: box.x0 + to * unit });
+    }
+    return boxes.length ? bounds(boxes) : null;
+  }
+
   function scaleBox(box, type, original, scan, margin = 3) {
     const scaleX = original.width / scan.width;
     const scaleY = original.height / scan.height;
@@ -112,7 +169,7 @@
     return regions;
   }
 
-  const scanner = { readLines, findRegions, scaleBox };
+  const scanner = { readLines, findRegions, scaleBox, runs, boxForRange };
   if (typeof module !== "undefined") module.exports = scanner;
   else window.SensitiveText = scanner;
 })();

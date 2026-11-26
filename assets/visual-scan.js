@@ -227,7 +227,7 @@
     return faces;
   }
 
-  async function findRegions(canvas, lines, detector, current) {
+  async function findRegions(canvas, lines, detector, current, readNicknames) {
     let pixels;
     const readPixels = () => {
       pixels ||= canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
@@ -235,10 +235,19 @@
     };
     const chat = typeof ChatLayout !== "undefined" && typeof ChatLayoutModel !== "undefined"
       ? ChatLayout.findRegions(readPixels(), lines, ChatLayoutModel)
-      : { avatars: [], associatedNames: [], messages: [] };
+      : { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
+        profiles: [], quoteSenders: [], speakerIds: new Map() };
+    if (readNicknames && chat.quoteSenders.some(({ box }) => !chat.speakerIds.has(box))) {
+      const boxes = chat.profiles.filter(({ name }) => name && !name.label).map(({ name }) => name.box);
+      if (boxes.length) {
+        const labels = await readNicknames(boxes).catch(() => null);
+        if (labels?.size) ChatLayout.matchQuoteSpeakers(chat.profiles, chat.quoteSenders, chat.speakerIds, labels);
+      }
+    }
     const avatars = chat.avatars;
-    const associatedNames = chat.associatedNames;
-    const candidateNames = lines.flatMap(nameCandidates)
+    const associatedNames = [...chat.associatedNames];
+    const quotedLines = new Set(chat.quoteBodies.map(({ line }) => line));
+    const candidateNames = lines.filter(line => !quotedLines.has(line)).flatMap(nameCandidates)
       .filter(box => !chat.messages.some(message => overlap(box, message) > .55))
       .slice(0, 180);
     if (candidateNames.length) {
@@ -272,7 +281,7 @@
       });
       if (nearby && !associatedNames.some(box => overlap(box, nearby) > .75)) associatedNames.push(nearby);
     }
-    return { avatars, associatedNames, faceScanIncomplete };
+    return { ...chat, associatedNames, participantNames: chat.associatedNames, faceScanIncomplete };
   }
 
   const vision = { loadModel, findRegions };

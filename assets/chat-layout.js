@@ -1,4 +1,6 @@
 (function () {
+  const { boxForRange } = typeof module === "undefined"
+    ? window.SensitiveText : require("./sensitive-text.js");
   const width = box => box.x1 - box.x0;
   const height = box => box.y1 - box.y0;
   const centerY = box => (box.y0 + box.y1) / 2;
@@ -257,54 +259,142 @@
       const box = bounds(spans.map(span => span.box));
       const offset = Math.abs((side === "left" ? box.x0 : box.x1) - edge);
       if (offset < size * .47 && height(box) >= size * .10 && height(box) <= size * .62) {
-        choices.push({ box, offset });
+        choices.push({ box, offset, label: text });
       }
     }
     choices.sort((a, b) => a.offset - b.offset);
-    return choices[0]?.box || pixelNickname(pixels, tone, area, edge, side, size);
+    if (choices.length) return choices[0];
+    const box = pixelNickname(pixels, tone, area, edge, side, size);
+    return box ? { box, label: "" } : null;
   }
 
-  function quoteSenders(shapes, lines, pairs) {
+  function quotes(shapes, lines, pairs) {
     const senders = [];
+    const bodies = new Map();
     for (const { bubble, side, size } of pairs) {
       const edge = side === "left" ? bubble.x0 : bubble.x1;
       for (const rail of shapes) {
         if (width(rail) > size * .14 || height(rail) < size * .49 || width(rail) / height(rail) >= .23 || rail.fill < .68) continue;
         if (rail.y0 < bubble.y1 - size * .10 || rail.y0 > bubble.y1 + size * .9) continue;
         if (Math.abs(rail.x0 - edge) > size * .51) continue;
-        for (const line of lines) {
+        const quotedLines = lines.filter(line => {
           const gap = line.box.x0 - rail.x1;
-          if (gap < 0 || gap > size * .78 || centerY(line.box) < rail.y0 ||
-            centerY(line.box) > Math.min(rail.y1, rail.y0 + size * .62)) continue;
-          const match = line.text.match(/^\s*([\p{L}\p{N}][\p{L}\p{N}_@. ·'’-]{0,32})\s*[:：]/u);
-          if (!match || /^\d+$/.test(match[1].trim())) continue;
-          const end = match[0].lastIndexOf(match[1]) + match[1].trimEnd().length;
-          const boxes = line.spans.filter(span => span.start < end && span.box).map(span => span.box);
-          if (boxes.length) senders.push(bounds(boxes));
+          return gap >= 0 && gap <= size * .78 && centerY(line.box) >= rail.y0 && centerY(line.box) <= rail.y1;
+        }).sort((a, b) => centerY(a.box) - centerY(b.box));
+        const first = quotedLines[0];
+        if (!first) continue;
+        for (const line of quotedLines) {
+          if (Math.abs(line.box.x0 - first.box.x0) > size * .35) continue;
+          if (!bodies.has(line)) bodies.set(line, 0);
+        }
+        if (centerY(first.box) > rail.y0 + size * .62 || bodies.get(first)) continue;
+        const match = first.text.match(/^\s*([\p{L}\p{N}\p{So}][\p{L}\p{N}\p{So}\p{M}\u200d_@. ·'’-]{0,32}?)\s*[:：]/u);
+        if (!match || /^[\d ]+$/.test(match[1])) continue;
+        const start = match[0].indexOf(match[1]);
+        const sender = boxForRange(first, start, start + match[1].length);
+        if (sender) senders.push({ box: sender, label: match[1] });
+        bodies.set(first, match[0].length);
+      }
+    }
+    return { senders, quoteBodies: Array.from(bodies, ([line, start]) => ({ line, start })) };
+  }
+
+  function fingerprint(pixels, box) {
+    const samples = new Float32Array(6 * 6 * 3);
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 6; x++) {
+        const target = (y * 6 + x) * 3;
+        for (const dy of [.25, .75]) {
+          for (const dx of [.25, .75]) {
+            const left = box.x0 + width(box) * (.1 + .8 * (x + dx) / 6);
+            const top = box.y0 + height(box) * (.1 + .8 * (y + dy) / 6);
+            const source = pixelIndex(pixels, left, top);
+            for (let channel = 0; channel < 3; channel++) {
+              samples[target + channel] += pixels.data[source + channel] / 4;
+            }
+          }
         }
       }
     }
-    return senders;
+    return samples;
+  }
+
+  function speakerKey(label) {
+    return label.normalize("NFKC").toLowerCase()
+      .replace(/(\p{Script=Han})\s+(?=\p{Script=Han})/gu, "$1").replace(/\s+/g, " ").trim();
+  }
+
+  function groupSpeakers(pixels, profiles) {
+    const groups = [];
+    const ids = new Map();
+    const ordered = [...profiles].sort((a, b) => a.avatar.y0 - b.avatar.y0 || a.avatar.x0 - b.avatar.x0);
+    for (const { avatar, side, name } of ordered) {
+      const key = speakerKey(name?.label || "");
+      const portrait = fingerprint(pixels, avatar);
+      let closest;
+      let distance = Infinity;
+      for (const group of groups) {
+        if (group.side !== side || (key && group.key && key !== group.key)) continue;
+        const difference = portrait.reduce((sum, channel, i) => sum + Math.abs(channel - group.portrait[i]), 0) / portrait.length;
+        const tolerance = key && group.key === key ? 22 : 10;
+        if (difference > tolerance || difference >= distance) continue;
+        closest = group;
+        distance = difference;
+      }
+      if (!closest) {
+        closest = { id: groups.length, side, key, portrait };
+        groups.push(closest);
+      } else if (!closest.key) {
+        closest.key = key;
+      }
+      ids.set(avatar, closest.id);
+      if (name) ids.set(name.box, closest.id);
+    }
+    return ids;
+  }
+
+  function matchQuoteSpeakers(profiles, senders, ids, labels = new Map()) {
+    for (const { box, label } of senders) {
+      const key = speakerKey(label);
+      if (!key || ids.has(box)) continue;
+      const matches = new Set();
+      for (const { avatar, name } of profiles) {
+        if (!name) continue;
+        if (speakerKey(name.label || labels.get(name.box) || "") === key) matches.add(ids.get(avatar));
+      }
+      if (matches.size === 1) ids.set(box, matches.values().next().value);
+    }
   }
 
   function findRegions(pixels, lines, model) {
-    const empty = { avatars: [], associatedNames: [], messages: [] };
     const tone = dominantTone(pixels);
-    if (!tone) return empty;
+    if (!tone) return { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
+      profiles: [], quoteSenders: [], speakerIds: new Map() };
     const shapes = components(pixels, tone);
     const pairs = profilePairs(pixels, tone, shapes, lines, model);
-    if (!pairs.length) return empty;
+    const { senders, quoteBodies } = quotes(shapes, lines, pairs);
+    const profiles = pairs.map(pair => ({ ...pair, name: nickname(pixels, tone, lines, pair) }));
+    const speakerIds = groupSpeakers(pixels, profiles);
+    matchQuoteSpeakers(profiles, senders, speakerIds);
+    const minimum = Math.max(14, Math.min(pixels.width, pixels.height) * .028);
+    const graphics = shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
+      box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height);
     return {
       avatars: pairs.map(({ avatar }) => avatar),
       associatedNames: [
-        ...pairs.map(pair => nickname(pixels, tone, lines, pair)).filter(Boolean),
-        ...quoteSenders(shapes, lines, pairs),
+        ...profiles.filter(({ name }) => name).map(({ name }) => name.box),
+        ...senders.map(({ box }) => box),
       ],
       messages: pairs.map(({ bubble }) => bubble),
+      quoteBodies,
+      graphics,
+      profiles,
+      quoteSenders: senders,
+      speakerIds,
     };
   }
 
-  const chat = { findRegions, pairInputs };
+  const chat = { findRegions, pairInputs, matchQuoteSpeakers };
   if (typeof module !== "undefined") module.exports = chat;
   else window.ChatLayout = chat;
 })();

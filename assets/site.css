@@ -399,6 +399,8 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
   touch-action: none;
 }
 
+.preview[data-candidate] { cursor: pointer; }
+
 .editor-status {
   min-height: 3rem;
   border-bottom: 1px solid var(--line);

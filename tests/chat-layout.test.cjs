@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { findRegions } = require("../assets/chat-layout.js");
+const { findRegions, matchQuoteSpeakers } = require("../assets/chat-layout.js");
+const mentions = require("../assets/chat-mentions.js");
+const { boxForRange } = require("../assets/sensitive-text.js");
 const model = require("../assets/chat-layout-model.js");
 
 function frame(dark = false) {
@@ -55,9 +57,10 @@ for (const dark of [false, true]) {
     pic.avatar(22, 30, dark ? [32, 35, 46] : [255, 255, 239]);
     const incomingName = pic.label("mango_7🌙", 89, 32);
     pic.fill(80, 56, 300, 56, dark ? [52, 55, 62] : [230, 231, 235], 9);
-    const body = pic.label("普通消息", 100, 76);
+    const body = pic.label("龙哥刚刚到了", 100, 76);
     pic.fill(89, 125, 3, 43, dark ? [104, 108, 118] : [205, 205, 205]);
-    const quoteLine = pic.label("片羽: 引用正文", 100, 135);
+    const quoteLine = pic.label("片羽: 麻烦何姐回复", 100, 135);
+    pic.label("我找陈小雨确认", 100, 152);
 
     pic.avatar(765, 216, dark ? [112, 90, 160] : [130, 175, 208]);
     pic.fill(696, 216, 49, 50, dark ? [57, 94, 82] : [153, 233, 175], 9);
@@ -73,6 +76,19 @@ for (const dark of [false, true]) {
     assert(!covers(result.associatedNames, body));
     assert(!covers(result.associatedNames, shortBody));
     assert(covers(result.messages, shortBody));
+
+    assert.deepEqual(result.quoteBodies.map(({ line, start }) => line.text.slice(start).trim()),
+      ["麻烦何姐回复", "我找陈小雨确认"]);
+    const names = mentions.findRegions(pic.lines, { ...result, participantNames: result.associatedNames });
+    for (const [text, name] of [["龙哥刚刚到了", "龙哥"], ["片羽: 麻烦何姐回复", "何姐"], ["我找陈小雨确认", "陈小雨"]]) {
+      const line = pic.lines.find(line => line.text === text);
+      const start = text.indexOf(name);
+      assert(names.some(box => {
+        const expected = boxForRange(line, start, start + name.length);
+        return box.x0 === expected.x0 && box.x1 === expected.x1 && box.y0 === expected.y0 && box.y1 === expected.y1;
+      }));
+    }
+    assert.equal(names.length, 3);
   });
 }
 
@@ -94,4 +110,59 @@ test("a central illustrated icon beside a flat widget does not become a chat ava
   const result = findRegions(pic, pic.lines, model);
   assert.deepEqual(result.avatars, []);
   assert.deepEqual(result.associatedNames, []);
+});
+
+test("reuses a speaker code on a repeated avatar and matching quote sender", () => {
+  const pic = frame();
+  const portrait = [128, 178, 214];
+  pic.avatar(22, 20, portrait);
+  const firstName = pic.label("片 羽", 88, 22);
+  pic.fill(80, 45, 234, 55, [230, 231, 235], 9);
+  pic.label("刚开始", 100, 65);
+  pic.fill(89, 112, 3, 40, [205, 205, 205]);
+  const quote = pic.label("片羽：之前的回复", 100, 124);
+
+  pic.avatar(22, 180, [222, 188, 122]);
+  pic.label("远岚", 88, 182);
+  pic.fill(80, 205, 246, 55, [230, 231, 235], 9);
+  pic.label("收到回复", 100, 225);
+
+  pic.avatar(22, 310, portrait);
+  pic.fill(80, 310, 232, 52, [230, 231, 235], 9);
+  pic.label("再发一次", 100, 329);
+
+  const result = findRegions(pic, pic.lines, model);
+  const ordered = [...result.avatars].sort((a, b) => a.y0 - b.y0);
+  assert.deepEqual(ordered.map(box => result.speakerIds.get(box)), [0, 1, 0]);
+  const nickname = result.associatedNames.find(box => covers([box], firstName));
+  const sender = result.associatedNames.find(box => box.y0 === quote.y0);
+  assert.equal(result.speakerIds.get(nickname), 0);
+  assert.equal(result.speakerIds.get(sender), 0);
+});
+
+test("does not merge speakers with different nicknames even if their portraits match", () => {
+  const pic = frame();
+  const portrait = [200, 163, 195];
+  for (const [y, label] of [[35, "木子"], [195, "竹子"]]) {
+    pic.avatar(22, y, portrait);
+    pic.label(label, 89, y + 2);
+    pic.fill(80, y + 25, 234, 55, [230, 231, 235], 9);
+    pic.label("一条消息", 100, y + 46);
+  }
+  const result = findRegions(pic, pic.lines, model);
+  assert.equal(result.avatars.length, 2);
+  assert.equal(new Set(result.avatars.map(box => result.speakerIds.get(box))).size, 2);
+});
+
+test("links a quote to a recovered nickname only when the speaker is unambiguous", () => {
+  const first = { avatar: {}, name: { box: {}, label: "" } };
+  const second = { avatar: {}, name: { box: {}, label: "山茶" } };
+  const ids = new Map([[first.avatar, 0], [second.avatar, 1]]);
+  const clear = { box: {}, label: "远 岚" };
+  matchQuoteSpeakers([first, second], [clear], ids, new Map([[first.name.box, "远岚"]]));
+  assert.equal(ids.get(clear.box), 0);
+
+  const ambiguous = { box: {}, label: "山茶" };
+  matchQuoteSpeakers([first, second], [ambiguous], ids, new Map([[first.name.box, "山茶"]]));
+  assert.equal(ids.has(ambiguous.box), false);
 });
