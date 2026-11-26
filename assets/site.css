@@ -16,6 +16,8 @@
   --line: #c4bdb0;
   --accent: #a73925;
   --grid: #191a160e;
+  --control-height: 2.75rem;
+  --menu-shadow: .2rem .2rem 0 #191a1622;
   --gutter: clamp(1rem, 4.5vw, 3rem);
   --font: system-ui, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --display: "Barlow Condensed", Impact, "Arial Narrow", sans-serif;
@@ -37,6 +39,7 @@ a { color: inherit; text-underline-offset: .22em; }
 
 a:focus-visible,
 button:focus-visible,
+input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -111,7 +114,7 @@ summary:focus-visible {
 .header-links a,
 .language-trigger {
   display: inline-flex;
-  min-height: 2.75rem;
+  min-height: var(--control-height);
   min-width: 2.75rem;
   align-items: center;
   justify-content: center;
@@ -140,14 +143,16 @@ summary:focus-visible {
 
 .language-trigger::-webkit-details-marker { display: none; }
 
-.language-trigger::after {
+.language-trigger::after,
+.mask-select::after {
   width: .35rem;
   height: .35rem;
   border: solid currentColor;
   border-width: 0 1px 1px 0;
-  transform: translateY(-.1rem) rotate(45deg);
   content: "";
 }
+
+.language-trigger::after { transform: translateY(-.1rem) rotate(45deg); }
 
 .language-options {
   position: absolute;
@@ -158,7 +163,7 @@ summary:focus-visible {
   padding: .25rem;
   border: 1px solid var(--ink);
   background: var(--surface);
-  box-shadow: .2rem .2rem 0 #191a1622;
+  box-shadow: var(--menu-shadow);
 }
 
 .language-options button {
@@ -250,32 +255,217 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
 }
 
 .style-bar {
-  padding-block: .35rem;
+  padding-block: .4rem;
   border-bottom: 1px solid var(--line);
-  color: var(--muted);
   font-size: .875rem;
+  line-height: 1.35;
+}
+
+.mask-options,
+.mask-style-settings,
+.mask-switches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .15rem 1.1rem;
+}
+
+.mask-options {
+  flex: 1 1 32rem;
+  min-inline-size: 0;
 }
 
 .style-bar label {
   display: flex;
-  flex-wrap: wrap;
+  min-block-size: var(--control-height);
   align-items: center;
-  gap: .4rem .6rem;
+  gap: .55rem;
+  font-weight: 600;
 }
 
-.style-bar select {
-  min-height: 2.5rem;
-  padding: .25rem .55rem;
+.mask-select {
+  position: relative;
+  display: grid;
+  min-inline-size: 0;
+}
+
+.mask-select::after {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: .8rem;
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+.mask-select:focus-within::after { color: var(--accent); }
+
+.mask-select select {
+  appearance: none;
+  inline-size: 7.25rem;
+  max-inline-size: 100%;
+  min-block-size: var(--control-height);
+  padding: .4rem 1.8rem .4rem .7rem;
   border: 1px solid var(--line);
   border-radius: 0;
   background: var(--surface);
   color: var(--ink);
   font: inherit;
+  cursor: pointer;
+}
+
+.mask-select:lang(en) select { inline-size: 9.25rem; }
+.mask-select select:hover { border-color: var(--ink); }
+
+@media (hover: hover) and (pointer: fine) {
+  @supports (appearance: base-select) and selector(select::picker(select)) {
+    .mask-select select,
+    .mask-select select::picker(select) {
+      appearance: base-select;
+    }
+
+    .mask-select select { align-items: center; }
+    .mask-select select::picker-icon { display: none; }
+    .mask-select select:open { border-color: var(--accent); }
+
+    .mask-select select::picker(select) {
+      margin-block: .25rem;
+      padding: .25rem;
+      border: 1px solid var(--ink);
+      border-radius: 0;
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: var(--menu-shadow);
+    }
+
+    .mask-select option {
+      min-block-size: var(--control-height);
+      align-items: center;
+      gap: .6rem;
+      padding: .4rem .55rem;
+      font-weight: 600;
+    }
+
+    .mask-select option:hover,
+    .mask-select option:focus-visible { background: var(--soft); }
+
+    .mask-select option:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .mask-select option:checked {
+      color: var(--accent);
+      font-weight: 750;
+    }
+
+    .mask-select option::checkmark {
+      order: 1;
+      margin-inline-start: auto;
+    }
+  }
+}
+
+.mask-toggle { cursor: pointer; }
+
+.mask-toggle input,
+.mask-range input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.mask-toggle input {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.mask-toggle input:disabled + span {
+  color: var(--muted);
+  cursor: default;
+}
+
+.mask-range input { inline-size: clamp(4.5rem, 8vw, 7rem); }
+
+.mask-range output {
+  flex: none;
+  inline-size: 4.5ch;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.style-bar > .quiet {
+  flex: none;
+  align-self: flex-start;
+  margin-inline-start: auto;
+  font-size: inherit;
 }
 
 .style-bar button[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.speaker-avatars {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  inline-size: 17.5rem;
+  min-block-size: 18rem;
+  border-inline-start: 1px solid var(--line);
+  background: var(--paper);
+  font-size: .875rem;
+  contain: size;
+}
+
+.speaker-avatars h2 {
+  margin: 0;
+  padding: .75rem .875rem;
+  border-bottom: 1px solid var(--line);
+  font-size: .9375rem;
+  font-weight: 750;
+}
+
+.speaker-avatar-list {
+  display: grid;
+  align-content: start;
+  gap: .55rem;
+  margin: 0;
+  padding: .7rem .875rem;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  list-style: none;
+}
+
+.speaker-avatar {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .5rem .65rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.speaker-avatar-preview {
+  flex: none;
+  inline-size: 3rem;
+  block-size: 3rem;
+}
+
+.speaker-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 .25rem;
+}
+
+.speaker-avatar-actions .quiet {
+  min-height: 2.25rem;
+  padding: .2rem .45rem;
+  color: var(--accent);
+  font-size: inherit;
 }
 
 .actions {
@@ -287,7 +477,7 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
 
 .primary,
 .quiet {
-  min-height: 2.75rem;
+  min-height: var(--control-height);
   padding: .48rem .8rem;
   border: 1px solid transparent;
   background: transparent;
@@ -333,6 +523,7 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
 
 .workspace[data-loaded] {
   min-height: 0;
+  align-items: start;
   background: var(--soft);
 }
 
@@ -403,6 +594,8 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
 }
 
 .preview[data-candidate] { cursor: pointer; }
+.preview[data-resize="nwse"] { cursor: nwse-resize; }
+.preview[data-resize="nesw"] { cursor: nesw-resize; }
 
 .editor-status {
   min-height: 3rem;
@@ -416,7 +609,22 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
 .dimensions { font-family: var(--mono); }
 
 @media (max-width: 52rem) {
-  .intro { grid-template-columns: minmax(0, 1fr); }
+  .intro, .editor-body { grid-template-columns: minmax(0, 1fr); }
+
+  .speaker-avatars {
+    inline-size: auto;
+    min-block-size: 0;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--line);
+    contain: none;
+  }
+
+  .speaker-avatar-list {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    overflow: visible;
+    overscroll-behavior-y: auto;
+    scrollbar-gutter: auto;
+  }
 }
 
 @media (max-width: 34rem) {
@@ -426,4 +634,32 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
   .toolbar { padding: .45rem .5rem; }
   .primary, .quiet { padding-inline: .58rem; }
   .actions { gap: .2rem; }
+
+  .style-bar { padding-inline: .65rem; }
+  .mask-options, .mask-style-settings { flex-basis: 100%; }
+
+  @supports (grid-template-columns: subgrid) {
+    .mask-style-settings {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr) 4.5ch;
+      gap: .15rem .65rem;
+    }
+
+    .mask-style-settings > label {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: subgrid;
+    }
+
+    .mask-select {
+      grid-column: 2 / -1;
+      justify-self: start;
+      max-inline-size: 100%;
+    }
+
+    .mask-range input {
+      inline-size: 100%;
+      min-inline-size: 0;
+    }
+  }
 }

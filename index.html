@@ -8,16 +8,16 @@
   <meta name="theme-color" content="#f4f1e9">
   <title data-zh-cn="截图脱敏 · AI 创作实验室">Screenshot Redactor · AI Creation Lab</title>
   <link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
-  <link rel="stylesheet" href="assets/site.css?v=4">
+  <link rel="stylesheet" href="assets/site.css?v=10">
   <script src="assets/i18n.js?v=2" defer></script>
   <script src="assets/ocr/tesseract.min.js" defer></script>
-  <script src="assets/sensitive-text.js?v=4" defer></script>
+  <script src="assets/sensitive-text.js?v=5" defer></script>
   <script src="assets/chat-layout-model.js" defer></script>
-  <script src="assets/chat-layout.js?v=5" defer></script>
-  <script src="assets/visual-scan.js?v=8" defer></script>
-  <script src="assets/chat-mentions.js?v=5" defer></script>
+  <script src="assets/chat-layout.js?v=10" defer></script>
+  <script src="assets/visual-scan.js?v=10" defer></script>
+  <script src="assets/chat-mentions.js?v=6" defer></script>
   <script src="assets/highlight-mentions.js?v=2" defer></script>
-  <script src="assets/redactor.js?v=13" defer></script>
+  <script src="assets/redactor.js?v=23" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main" data-zh-cn="跳到工具">Skip to the tool</a>
@@ -72,39 +72,85 @@
         <div class="actions">
           <button class="quiet" type="button" id="undo" disabled data-zh-cn="撤销">Undo</button>
           <button class="quiet" type="button" id="clear" disabled data-zh-cn="清空遮挡">Clear masks</button>
+          <button class="quiet" type="button" id="copy" disabled data-zh-cn="复制图片">Copy image</button>
           <button class="primary" type="button" id="save" disabled data-zh-cn="导出 PNG">Export PNG</button>
         </div>
       </div>
       <div class="style-bar" id="style-bar" hidden>
-        <label for="mask-style">
-          <span data-zh-cn="遮挡样式">Mask style</span>
-          <select id="mask-style">
-            <option value="ink" data-zh-cn="墨黑">Ink black</option>
-            <option value="paper" data-zh-cn="纸白">Paper white</option>
-            <option value="pixels" data-zh-cn="像素纹理">Pixel pattern</option>
-            <option id="speaker-mask-style" value="speakers" hidden disabled data-zh-cn="按发言人区分">By speaker</option>
-          </select>
-        </label>
+        <div class="mask-options">
+          <div class="mask-style-settings">
+            <label for="mask-style">
+              <span data-zh-cn="遮挡样式">Mask style</span>
+              <span class="mask-select">
+                <select id="mask-style">
+                  <option value="ink" data-zh-cn="墨黑">Ink black</option>
+                  <option value="paper" data-zh-cn="纸白">Paper white</option>
+                  <option value="pixels" data-zh-cn="像素纹理">Pixel pattern</option>
+                  <option value="blur" data-zh-cn="高斯模糊">Gaussian blur</option>
+                </select>
+              </span>
+            </label>
+            <label class="mask-range">
+              <span data-zh-cn="不透明度">Opacity</span>
+              <input type="range" id="mask-opacity" min="0" max="100" value="100" aria-valuetext="100%">
+              <output id="mask-opacity-value" for="mask-opacity" aria-hidden="true">100%</output>
+            </label>
+            <label class="mask-range" id="blur-strength-control" hidden>
+              <span data-zh-cn="模糊强度">Blur strength</span>
+              <input type="range" id="blur-strength" min="4" max="40" value="16">
+              <output id="blur-strength-value" for="blur-strength" aria-hidden="true">16</output>
+            </label>
+          </div>
+          <div class="mask-switches">
+            <label class="mask-toggle">
+              <input type="checkbox" id="mark-speakers" role="switch" autocomplete="off" checked disabled>
+              <span data-zh-cn="按发言人区分">Mark speakers</span>
+            </label>
+            <label class="mask-toggle">
+              <input type="checkbox" id="hide-avatar-names" role="switch" autocomplete="off" checked>
+              <span data-zh-cn="隐藏头像旁昵称">Hide names beside avatars</span>
+            </label>
+          </div>
+        </div>
         <button type="button" class="quiet" id="mask-preview" aria-pressed="false" data-zh-cn="预览遮挡">Preview masks</button>
       </div>
       <div class="editor-status" id="editor-status" hidden>
         <p id="feedback" role="status" aria-atomic="true"></p>
         <p class="dimensions" id="dimensions"></p>
       </div>
-      <div class="workspace" id="workspace">
-        <div class="import-panel" id="import-panel">
-          <div class="import-mark" aria-hidden="true"></div>
-          <div class="actions import-actions">
-            <button class="primary" type="button" id="choose" disabled data-zh-cn="选择截图">Choose a screenshot</button>
-            <button class="quiet" type="button" id="try-example" disabled data-zh-cn="试用示例">Try an example</button>
+      <div class="editor-body">
+        <div class="workspace" id="workspace">
+          <div class="import-panel" id="import-panel">
+            <div class="import-mark" aria-hidden="true"></div>
+            <div class="actions import-actions">
+              <button class="primary" type="button" id="choose" disabled data-zh-cn="选择截图">Choose a screenshot</button>
+              <button class="quiet" type="button" id="try-example" disabled data-zh-cn="试用示例">Try an example</button>
+            </div>
+            <p data-zh-cn="也可以拖入文件，或直接粘贴截图。">You can also drop a file or paste a screenshot.</p>
+            <p class="formats">PNG · JPEG · WebP</p>
+            <noscript><p>Enable JavaScript to edit images in your browser. 请启用 JavaScript 以在浏览器中编辑图片。</p></noscript>
           </div>
-          <p data-zh-cn="也可以拖入文件，或直接粘贴截图。">You can also drop a file or paste a screenshot.</p>
-          <p class="formats">PNG · JPEG · WebP</p>
-          <noscript><p>Enable JavaScript to edit images in your browser. 请启用 JavaScript 以在浏览器中编辑图片。</p></noscript>
+          <canvas id="preview" class="preview" hidden role="img" aria-label="Screenshot preview. Click a box to toggle it. Drag a corner of a selected box to resize it, or drag elsewhere to add a mask." data-zh-cn-aria-label="截图预览。点击虚线框切换选择，拖动已选框的角点可调整大小，拖动空白处可补画遮挡。"></canvas>
         </div>
-        <canvas id="preview" class="preview" hidden role="img" aria-label="Screenshot preview. Click a dashed box to toggle it, or drag to add a mask." data-zh-cn-aria-label="截图预览。点击虚线框切换选择，拖动可补画遮挡。"></canvas>
+        <aside class="speaker-avatars" id="speaker-avatars" aria-labelledby="speaker-avatars-heading" hidden>
+          <h2 id="speaker-avatars-heading" data-zh-cn="发言人头像">Speaker avatars</h2>
+          <ul class="speaker-avatar-list" id="speaker-avatar-list"></ul>
+        </aside>
       </div>
       <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp" hidden>
+      <input type="file" id="avatar-image-input" accept="image/png,image/jpeg,image/webp" hidden>
+      <template id="speaker-avatar-template">
+        <li class="speaker-avatar">
+          <canvas class="speaker-avatar-preview" width="96" height="96" aria-hidden="true"></canvas>
+          <div>
+            <strong class="speaker-avatar-name"></strong>
+            <div class="speaker-avatar-actions">
+              <button type="button" class="quiet" data-avatar-upload></button>
+              <button type="button" class="quiet" data-avatar-reset hidden></button>
+            </div>
+          </div>
+        </li>
+      </template>
     </section>
   </main>
 </body>

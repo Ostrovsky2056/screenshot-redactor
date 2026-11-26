@@ -53,15 +53,15 @@
     return dominant.slice(1).map(channel => channel / dominant[0]);
   }
 
-  function components(pixels, tone) {
+  function components(pixels, tone, startY = 0, endY = pixels.height) {
     const step = Math.max(1, Math.ceil(Math.max(pixels.width, pixels.height) / 840));
     const cols = Math.ceil(pixels.width / step);
-    const rows = Math.ceil(pixels.height / step);
+    const rows = Math.ceil((endY - startY) / step);
     const occupied = new Uint8Array(cols * rows);
     const pending = new Int32Array(occupied.length);
     for (let i = 0; i < occupied.length; i++) {
       const x = (i % cols) * step;
-      const y = Math.floor(i / cols) * step;
+      const y = startY + Math.floor(i / cols) * step;
       occupied[i] = Number(distance(pixels.data, pixelIndex(pixels, x, y), tone) > 14);
     }
     const shapes = [];
@@ -92,8 +92,8 @@
       shapes.push({
         x0: left * step,
         x1: Math.min(pixels.width, (right + 1) * step),
-        y0: top * step,
-        y1: Math.min(pixels.height, (bottom + 1) * step),
+        y0: startY + top * step,
+        y1: Math.min(endY, startY + (bottom + 1) * step),
         fill,
       });
     }
@@ -216,7 +216,7 @@
       inside(area, (box.x0 + box.x1) / 2, centerY(box)));
   }
 
-  function pixelNickname(pixels, tone, area, edge, side, size) {
+  function inkColumns(pixels, tone, area) {
     const columns = [];
     for (let x = Math.ceil(area.x0); x < area.x1; x++) {
       let top = Infinity;
@@ -229,6 +229,11 @@
       }
       if (bottom - top >= 2) columns.push({ x0: x, x1: x + 1, y0: top, y1: bottom });
     }
+    return columns;
+  }
+
+  function pixelNickname(pixels, tone, area, edge, side, size) {
+    const columns = inkColumns(pixels, tone, area);
     if (side === "right") columns.reverse();
     const nearest = columns[0];
     if (!nearest || Math.abs(nearest.x0 - edge) > size * .43) return null;
@@ -326,26 +331,102 @@
     return { senders, quoteBodies: Array.from(bodies, ([line, start]) => ({ line, start })) };
   }
 
-  function chatTitle(lines, pairs, pixels) {
-    if (pairs.length < 2) return null;
-    const firstMessage = Math.min(...pairs.map(({ bubble }) => bubble.y0));
-    for (const line of lines) {
-      const { box, text } = line;
-      if (box.x0 >= .17 * pixels.width || box.y0 >= .15 * pixels.height || box.y1 >= firstMessage ||
-        line.confidence < 48) continue;
-      const suffix = text.match(/\s+\(\s*[1-9][0-9]{0,3}\s*\)\s*$/u);
-      if (!suffix || !/\p{L}/u.test(text.slice(0, suffix.index))) continue;
-      const title = exactBoxForRange(line, 0, suffix.index);
-      const count = exactBoxForRange(line, suffix.index, text.length);
-      if (!title || !count || count.x0 <= title.x0) continue;
-      // Parts of a title can be split into separate OCR lines by the sparse-text pass.
-      const leading = lines.find(other => other !== line && !(other.confidence < 55) &&
-        other.box.x1 <= title.x0 && title.x0 - other.box.x1 < height(title) &&
-        Math.min(other.box.y1, title.y1) - Math.max(other.box.y0, title.y0) >= .65 * height(other.box));
-      const label = leading ? bounds([leading.box, title]) : title;
-      return { ...label, x1: Math.min(label.x1, count.x0) };
+  function titleBounds(line, pixels) {
+    const suffix = line.text.match(/\(\s*[1-9](?:\s*[0-9]){0,3}\s*\)\s*$/u);
+    if (!suffix || !/\p{L}/u.test(line.text.slice(0, suffix.index))) return null;
+    const title = exactBoxForRange(line, 0, suffix.index);
+    const count = exactBoxForRange(line, suffix.index, line.text.length);
+    if (!title || !count || count.x0 <= title.x0) return null;
+    if (pixels && count.x0 - title.x1 > height(title)) {
+      // A valid count can follow a title whose intervening glyphs the OCR skipped.
+      const gap = { x0: title.x1, x1: count.x0, y0: title.y0, y1: title.y1 };
+      const at = pixelIndex(pixels, (gap.x0 + gap.x1) / 2, Math.max(0, gap.y0 - 2));
+      const tone = pixels.data.subarray(at, at + 3);
+      if (inkColumns(pixels, tone, gap).length >= .3 * height(title)) return null;
+    }
+    return bounds([title, count]);
+  }
+
+  function headerDivider(pixels, before) {
+    const { data, width, height } = pixels;
+    const reach = Math.max(3, Math.round(.004 * height));
+    const step = Math.ceil(.86 * width / 48);
+    for (let y = Math.max(12, Math.round(.016 * height)); y < before && y + reach < height; y++) {
+      let probes = 0, edge = 0, rail = 0;
+      for (let x = Math.ceil(.07 * width); x < .93 * width; x += step) {
+        const at = pixelIndex(pixels, x, y);
+        const above = pixelIndex(pixels, x, y - reach);
+        const below = pixelIndex(pixels, x, y + reach);
+        probes++;
+        if (distance(data, at, [data[above], data[above + 1], data[above + 2]]) < 14) continue;
+        edge++;
+        if (distance(data, at, [data[below], data[below + 1], data[below + 2]]) >= 14) rail++;
+      }
+      if (edge >= .8 * probes && rail >= .35 * probes) return y;
     }
     return null;
+  }
+
+  function titleCropAboveDivider(pixels, candidates, divider) {
+    const start = candidates.filter(({ box, text }) => box.x0 < .17 * pixels.width &&
+      box.y0 > .15 * divider && box.y1 < divider && /\p{L}/u.test(text))
+      .sort((a, b) => a.box.x0 - b.box.x0)[0]?.box;
+    const size = start ? height(start) : .36 * divider;
+    const padding = Math.ceil(.35 * size);
+    const row = {
+      x0: Math.max(Math.ceil(.015 * pixels.width), (start?.x0 ?? 0) - 1.5 * size),
+      x1: Math.floor(.86 * pixels.width),
+      y0: Math.max(0, (start?.y0 ?? .23 * divider) - padding),
+      y1: Math.min(divider, (start?.y1 ?? .77 * divider) + padding),
+    };
+    const at = pixelIndex(pixels, .63 * pixels.width, Math.max(0, row.y0 - 2));
+    const tone = pixels.data.subarray(at, at + 3);
+    const columns = inkColumns(pixels, tone, row);
+    const first = columns[0];
+    if (!first || first.x0 > .22 * pixels.width) return null;
+    let last = first;
+    for (const column of columns.slice(1)) {
+      if (column.x0 - last.x1 > Math.max(6, 1.6 * size)) break;
+      last = column;
+    }
+    if (last.x1 - first.x0 < size) return null;
+    return { ...row, x0: Math.max(0, first.x0 - padding), x1: Math.min(row.x1, last.x1 + padding) };
+  }
+
+  function chatHeader(lines, pairs, pixels, divider) {
+    const empty = { groupTitle: null, titleCrop: null };
+    if (pairs.length < 2) return empty;
+    // A pair of title glyphs can resemble a small avatar and bubble.
+    const chatBelow = divider && pairs.filter(({ avatar, bubble }) => avatar.y0 >= divider && bubble.y0 >= divider).length >= 2;
+    const limit = chatBelow ? divider : Math.min(...pairs.map(({ bubble }) => bubble.y0));
+    const candidates = lines.filter(({ box }) => box.y0 < .15 * pixels.height &&
+      box.y1 < limit && height(box) >= 8);
+    for (const line of candidates) {
+      const { box, text, confidence } = line;
+      // Sparse OCR sometimes puts the count on its own line and drops its opening parenthesis.
+      if (confidence < 42 || !/(?:\(\s*|^|\s)[1-9](?:\s*[0-9]){0,3}\s*\)\s*$/u.test(text)) continue;
+      const row = candidates.filter(({ box: part }) => part.x0 <= box.x0 &&
+        part.x1 <= box.x1 && Math.abs(centerY(part) - centerY(box)) <= .4 * Math.max(height(part), height(box)) &&
+        Math.min(part.y1, box.y1) - Math.max(part.y0, box.y0) >= .5 * Math.min(height(part), height(box)));
+      const start = row.filter(part => part.box.x0 < .17 * pixels.width &&
+        !(part.confidence < 25) && /\p{L}/u.test(part.text)).sort((a, b) => a.box.x0 - b.box.x0)[0];
+      if (!start) continue;
+
+      const title = confidence < 48 ? null : titleBounds(line, pixels);
+      const area = bounds([start.box, box]);
+      const padding = Math.ceil(.32 * Math.max(height(start.box), height(box)));
+      if (!title || start.box.x0 < title.x0) {
+        const titleCrop = { x0: Math.max(0, area.x0 - padding), y0: Math.max(0, area.y0 - padding),
+          x1: Math.min(pixels.width, area.x1 + padding), y1: Math.min(limit, area.y1 + padding) };
+        // Cover the adjacent prefix even when the focused read is unavailable.
+        const groupTitle = title && start.box.x1 <= title.x0 && title.x0 - start.box.x1 < height(title)
+          ? bounds([start.box, title]) : title;
+        return { groupTitle, titleCrop };
+      }
+      return { groupTitle: title, titleCrop: null };
+    }
+    // A toolbar divider and chat rows below it allow a focused read even when sparse OCR misses the count.
+    return chatBelow ? { groupTitle: null, titleCrop: titleCropAboveDivider(pixels, candidates, divider) } : empty;
   }
 
   function sameAvatarFragment(pixels, tone, fragment, avatar, atStart) {
@@ -377,25 +458,35 @@
     return false;
   }
 
-  function repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, groupTitle, speakerIds) {
+  function repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, groupTitle, speakerIds, divider) {
     const recovered = [];
-    for (const shape of [...shapes, ...colorCrops]) {
+    const below = divider === null ? [] : profiles.filter(({ avatar, bubble }) => avatar.y0 >= divider && bubble.y0 >= divider);
+    // A divider can connect the topmost portrait to a much larger component.
+    const start = (divider ?? 0) + 2;
+    const edgeShapes = below.length >= 2
+      ? components(pixels, tone, start, Math.min(pixels.height, start + Math.ceil(1.4 * Math.max(...below.map(({ avatar }) => height(avatar))))))
+      : [];
+    const edgeFragments = new Set(edgeShapes.filter(box => box.y0 <= start + 2 && height(box) < .65 * width(box)));
+    const neighbors = [...shapes, ...edgeShapes];
+    for (const shape of [...shapes, ...colorCrops, ...edgeFragments]) {
       const w = width(shape), h = height(shape);
       if (w < 10 || h < 5 || profiles.some(({ avatar }) => overlap(avatar, shape) > .65) ||
         recovered.some(avatar => overlap(avatar, shape) > .65)) continue;
       const clipped = h < .65 * w;
-      const nearTop = shape.y0 <= 3 ||
+      const atDivider = edgeFragments.has(shape);
+      const nearTop = shape.y0 <= 3 || atDivider ||
         (groupTitle && shape.y0 >= groupTitle.y1 && shape.y0 < .26 * pixels.height);
       const nearBottom = pixels.height - shape.y1 <= 3;
       if (clipped && (!nearTop && !nearBottom)) continue;
 
+      let matchedSpeaker;
       for (const { avatar, side } of profiles) {
         const size = width(avatar);
         if (w < .56 * size || w > 1.12 * size || h > 1.12 * height(avatar) ||
           shape.x0 < avatar.x0 - .10 * size || shape.x1 > avatar.x1 + .10 * size) continue;
         if (clipped && h > .64 * height(avatar)) continue;
         if (!clipped && (h < .72 * height(avatar) || shape.outlined !== undefined)) continue;
-        const adjacent = !clipped || shapes.some(bubble => {
+        const adjacent = !clipped || neighbors.some(bubble => {
           const gap = side === "left" ? bubble.x0 - shape.x1 : shape.x0 - bubble.x1;
           const cut = nearTop ? Math.abs(bubble.y0 - shape.y0) : Math.abs(bubble.y1 - shape.y1);
           return gap >= 0 && gap <= 1.6 * size && cut <= Math.max(3, .10 * size) &&
@@ -406,11 +497,20 @@
             Math.abs(centerY(box) - centerY(shape)) < .57 * height(avatar) && width(box) >= .75 * size;
         });
         if (!adjacent || !sameAvatarFragment(pixels, tone, shape, avatar, !clipped || nearTop)) continue;
+        const speaker = speakerIds.get(avatar);
+        if (matchedSpeaker !== undefined && speaker !== matchedSpeaker) {
+          matchedSpeaker = undefined;
+          break;
+        }
+        matchedSpeaker = speaker;
+        if (!atDivider) break;
+      }
+      if (matchedSpeaker !== undefined) {
         const portrait = clipped ? { ...shape, clipped,
-          x0: Math.max(0, shape.x0 - 2), x1: Math.min(pixels.width, shape.x1 + 2) } : { ...shape };
+          x0: Math.max(0, shape.x0 - 2), x1: Math.min(pixels.width, shape.x1 + 2),
+          y0: atDivider ? divider + 1 : shape.y0 } : { ...shape };
         recovered.push(portrait);
-        speakerIds.set(portrait, speakerIds.get(avatar));
-        break;
+        speakerIds.set(portrait, matchedSpeaker);
       }
     }
     return recovered;
@@ -511,19 +611,24 @@
     if (!tone) return { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
       profiles: [], quoteSenders: [], speakerIds: new Map() };
     const shapes = components(pixels, tone);
-    const pairs = profilePairs(pixels, tone, shapes, lines, model);
+    const detectedPairs = profilePairs(pixels, tone, shapes, lines, model);
+    const divider = detectedPairs.length >= 2 ? headerDivider(pixels, .16 * pixels.height) : null;
+    const { groupTitle, titleCrop } = chatHeader(lines, detectedPairs, pixels, divider);
+    const titleArea = groupTitle || titleCrop;
+    const pairs = titleArea ? detectedPairs.filter(({ avatar, bubble }) =>
+      overlap(avatar, titleArea) < .65 || overlap(bubble, titleArea) < .65) : detectedPairs;
     const { senders, quoteBodies } = quotes(shapes, lines, pairs);
     const profiles = pairs.map(pair => ({ ...pair, name: nickname(pixels, tone, lines, pair) }));
     const speakerIds = groupSpeakers(pixels, profiles);
     matchQuoteSpeakers(profiles, senders, speakerIds);
-    const groupTitle = chatTitle(lines, pairs, pixels);
-    const recovered = repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, groupTitle, speakerIds);
+    const recovered = repeatedAvatars(pixels, tone, shapes, colorCrops, profiles, lines, titleArea, speakerIds, divider);
     const minimum = Math.max(14, Math.min(pixels.width, pixels.height) * .028);
     const graphics = shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
       box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height);
     return {
       avatars: avatarSlots(profiles, recovered, pixels, speakerIds),
       groupTitle,
+      titleCrop,
       associatedNames: [
         ...profiles.filter(({ name }) => name).map(({ name }) => name.box),
         ...senders.map(({ box }) => box),
@@ -537,7 +642,7 @@
     };
   }
 
-  const chat = { findRegions, pairInputs, matchQuoteSpeakers };
+  const chat = { findRegions, pairInputs, matchQuoteSpeakers, titleBounds };
   if (typeof module !== "undefined") module.exports = chat;
   else window.ChatLayout = chat;
 })();

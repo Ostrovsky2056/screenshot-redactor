@@ -296,7 +296,7 @@
     return faces;
   }
 
-  async function findRegions(canvas, lines, detector, current, readNicknames) {
+  async function findRegions(canvas, lines, detector, current, readNicknames, readTitle) {
     let pixels;
     const readPixels = () => {
       pixels ||= canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
@@ -307,6 +307,12 @@
       ? ChatLayout.findRegions(readPixels(), lines, ChatLayoutModel, colorCrops)
       : { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
         profiles: [], quoteSenders: [], speakerIds: new Map() };
+    if (chat.titleCrop && readTitle) {
+      const readings = await readTitle([chat.titleCrop]).catch(() => null);
+      const reading = readings?.get(chat.titleCrop);
+      const title = reading?.confidence >= 35 && ChatLayout.titleBounds(reading.line, readPixels());
+      if (title) chat.groupTitle = title;
+    }
     if (readNicknames && chat.quoteSenders.some(({ box }) => !chat.speakerIds.has(box))) {
       const boxes = chat.profiles.filter(({ name }) => name && !name.label).map(({ name }) => name.box);
       if (boxes.length) {
@@ -314,8 +320,12 @@
         if (labels?.size) ChatLayout.matchQuoteSpeakers(chat.profiles, chat.quoteSenders, chat.speakerIds, labels);
       }
     }
-    const avatars = chat.avatars;
-    const associatedNames = [...chat.associatedNames];
+    const title = chat.groupTitle;
+    const inTitleBar = box => title && box.y0 < title.y1 &&
+      (box.y0 + box.y1) / 2 < title.y1 + .45 * (title.y1 - title.y0) &&
+      box.x0 < title.x1 + (title.y1 - title.y0) && box.x1 > title.x0;
+    const avatars = chat.avatars.filter(box => !inTitleBar(box));
+    const associatedNames = chat.associatedNames.filter(box => !inTitleBar(box));
     const quotedLines = new Set(chat.quoteBodies.map(({ line }) => line));
     const candidateNames = lines.filter(line => !quotedLines.has(line)).flatMap(line => nameCandidates(line, readPixels()))
       .filter(box => !(chat.groupTitle && overlap(box, chat.groupTitle) > .55) &&
@@ -324,7 +334,7 @@
     if (candidateNames.length) {
       for (const box of candidateNames) {
         const avatar = adjacentAvatar(readPixels(), box);
-        if (!avatar) continue;
+        if (!avatar || inTitleBar(avatar)) continue;
         if (!avatars.some(found => overlap(found, avatar) > .55)) avatars.push(avatar);
         if (!associatedNames.some(found => overlap(found, box) > .75)) associatedNames.push(box);
       }
@@ -335,8 +345,9 @@
         const faces = await findFaces(canvas, detector, current);
         faces.sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0));
         for (const face of faces) {
-          if (avatars.some(box => overlap(box, face) > .55)) continue;
+          if (inTitleBar(face) || avatars.some(box => overlap(box, face) > .55)) continue;
           const avatar = enclosingAvatar(readPixels(), face);
+          if (inTitleBar(avatar)) continue;
           if (chat.profiles.length >= 2 && chatSticker(readPixels(), avatar, avatars)) {
             chat.graphics.push(avatar);
             continue;

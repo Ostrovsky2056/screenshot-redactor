@@ -246,12 +246,13 @@
     }));
   }
 
-  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames }, aliases, canvas) {
+  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames, groupTitle }, aliases, canvas) {
     const quoteStarts = new Map(quoteBodies.map(({ line, start }) => [line, start]));
     const found = [];
     for (const line of lines) {
       const quoted = quoteStarts.has(line);
       for (const run of runs(line, avatars)) {
+        if (groupTitle && (inside(run.box, groupTitle) || inside(groupTitle, run.box))) continue;
         const start = Math.max(run.start, quoteStarts.get(line) ?? 0);
         if (start >= run.end) continue;
         const inChat = quoted || messages.some(message => inside(message, run.box)) || participantNames.some(name => {
@@ -270,10 +271,12 @@
         });
         const text = line.text.slice(start, run.end);
         const mixed = /\p{Script=Han}/u.test(text) && /[\p{Script=Latin}\p{N}]/u.test(text);
-        const retry = mixed || names.some(name => !name.exact || line.spans.some(span => span.box &&
+        // A rule or dashed outline can be read as a two-pixel-tall line of letters.
+        const textHeight = run.box.y1 - run.box.y0;
+        const retry = (inChat && textHeight >= 6 && (mixed || (line.confidence < 75 && /\p{L}/u.test(text)))) ||
+          names.some(name => !name.exact || line.spans.some(span => span.box &&
           (span.end <= name.from || span.start >= name.to) &&
-          span.box.x0 < name.box.x1 && name.box.x0 < span.box.x1)) ||
-          (inChat && line.confidence < 75 && /\p{L}/u.test(text));
+          span.box.x0 < name.box.x1 && name.box.x0 < span.box.x1));
         if (names.length || retry) found.push({ line, run, start, inChat, names, retry });
       }
     }

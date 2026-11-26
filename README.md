@@ -15,14 +15,14 @@ See how the editor selects avatars, nicknames, and an email address in a fiction
 ## Using the editor
 
 1. Choose, drop, or paste a PNG, JPEG, or WebP screenshot. The editor looks for avatars, faces, and sensitive text in English and Simplified Chinese.
-2. Review the dashed boxes. Red boxes are selected for masking. Gray boxes are available to select, and amber boxes flag name boundaries that need a closer look. Click a box to toggle it, drag to add one, or undo a change. Clearing the selection keeps the detected boxes available.
-3. Preview and export a PNG at the original dimensions. When the editor recognizes chat speakers, it defaults to giving each speaker a consistent color and letter across their avatars, nicknames, and matching quote attributions. Ink black, paper white, and pixel pattern masks are also available.
+2. Review the dashed boxes. Red boxes are selected for masking. Gray boxes are available to select, and amber boxes flag name boundaries that need a closer look. Click a box to toggle it, drag a corner of a selected box to resize it, or drag elsewhere to add a box. You can undo changes. Clearing the selection keeps the detected boxes available.
+3. Choose a mask style and adjust its opacity. Gaussian blur also has a strength control. Mark speakers replaces each recognized speaker’s avatars with a matching illustration generated in the browser. In Speaker avatars, you can assign a PNG, JPEG, or WebP from your device to a speaker or restore their default illustration. Selected names beside avatars are filled with the nearby background color by default. Preview the result, then copy the redacted image or export a PNG at the original dimensions.
 
 Text recognition covers common email addresses, phone numbers, IDs, payment card numbers, credentials, and names. In chat, the editor uses the positions of avatars, bubbles, and text to find speakers. It looks for names and nicknames inside messages and quoted replies and masks the recognized names. Review and adjust suggestions before export.
 
 ## On-device processing
 
-Images, recognized text, and mask regions are processed in browser memory. On the first scan, the browser loads the models and WebAssembly files from this site. Exported masks use generated, opaque colors, including those in the pixel pattern.
+Images, recognized text, and mask regions are processed in browser memory. On the first scan, the browser loads the models and WebAssembly files from this site. Masks are rendered directly into the copied or exported PNG. Blur and lower opacity can leave details from the original visible.
 
 For mixed-language chat text and uncertain name boundaries, Tesseract.js reads selected lines again from crops of the original image. The editor aligns the name to the new character boxes when it can verify the range.
 

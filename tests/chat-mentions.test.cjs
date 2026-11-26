@@ -134,6 +134,14 @@ test("can recover an explicit mixed-script mention on the reread", async () => {
   assert.deepEqual(result, [{ box: { x0: 42, y0: 28, x1: 82, y1: 37 }, pending: false }]);
 });
 
+test("does not reread an outline mistaken for a thin line of text", async () => {
+  const outline = line("ee ase ee", 90, true);
+  outline.box.y1 = 93;
+  outline.confidence = 28;
+  const result = await refineRegions([outline], layout, null, () => assert.fail("Unexpected OCR reread"));
+  assert.deepEqual(result, []);
+});
+
 test("recovers a nickname from a missed color bubble and leaves its message text visible", () => {
   const reading = line("阿澄，试试");
   const crops = new Map([[reading.box, { line: reading, confidence: 94 }]]);

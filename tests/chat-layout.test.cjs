@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { findRegions, matchQuoteSpeakers } = require("../assets/chat-layout.js");
+const { findRegions, matchQuoteSpeakers, titleBounds } = require("../assets/chat-layout.js");
 const mentions = require("../assets/chat-mentions.js");
 const { boxForRange } = require("../assets/sensitive-text.js");
 const model = require("../assets/chat-layout-model.js");
@@ -198,12 +198,56 @@ test("covers a group title and the visible part of a repeated avatar at the pane
     pic.label("Message", 100, y + 43);
   }
   const result = findRegions(pic, pic.lines, model);
-  assert.equal(result.groupTitle.x1, boxForRange(pic.lines[0], 0, 11).x1);
+  assert.deepEqual(result.groupTitle, pic.lines[0].box);
   const fragment = result.avatars.find(box => box.clipped);
   assert(fragment);
   assert.deepEqual([fragment.y0, fragment.y1], [50, 70]);
   const reference = result.avatars.find(box => box.y0 === 144);
   assert.equal(result.speakerIds.get(fragment), result.speakerIds.get(reference));
+});
+
+test("recovers a repeated avatar joined to the separator below the chat header", () => {
+  const pic = frame();
+  const portrait = [176, 197, 231];
+  pic.avatar(22, 22, portrait);
+  pic.fill(0, 0, pic.width, 50, [247, 247, 247]);
+  pic.fill(10, 50, pic.width - 20, 1, [227, 227, 227]);
+  pic.label("Studio room (4)", 24, 17);
+  pic.lines[0].confidence = 90;
+  pic.fill(81, 50, 266, 44, [230, 231, 235]);
+  pic.label("First", 99, 58);
+  for (const [y, tone] of [[144, portrait], [284, [205, 169, 122]]]) {
+    pic.avatar(22, y, tone);
+    pic.fill(81, y + 25, 223, 52, [230, 231, 235], 8);
+    pic.label("Message", 100, y + 43);
+  }
+  const result = findRegions(pic, pic.lines, model);
+  const fragment = result.avatars.find(box => box.clipped);
+  const reference = result.avatars.find(box => box.y0 === 144);
+  assert(fragment && reference);
+  assert(covers([fragment], { x0: 22, x1: 70, y0: 51, y1: 70 }));
+  assert.equal(result.speakerIds.get(fragment), result.speakerIds.get(reference));
+});
+
+test("uses the divider when title letters resemble an avatar and bubble", () => {
+  const pic = frame();
+  pic.label("Go 周末 (4)", 24, 18, true, 24);
+  const title = pic.lines[0];
+  title.confidence = 90;
+  pic.fill(25, 31, 21, 10, [125, 130, 135]);
+  title.spans[0].box.y1 = title.box.y1 = 41;
+  pic.fill(10, 56, pic.width - 20, 2, [237, 237, 237]);
+  for (const y of [80, 234]) {
+    pic.avatar(22, y, [176, 197, 231]);
+    pic.fill(81, y + 23, 232, 47, [230, 231, 235], 9);
+    pic.label("Message", 100, y + 38);
+  }
+
+  const result = findRegions(pic, pic.lines, model);
+  assert.deepEqual(result.groupTitle, title.box);
+  assert.equal(result.titleCrop, null);
+  assert.equal(result.avatars.length, 2);
+  assert.equal(result.messages.length, 2);
 });
 
 test("recovers a narrow repeated avatar and uses the same mask size as the other full avatars", () => {
@@ -224,4 +268,70 @@ test("recovers a narrow repeated avatar and uses the same mask size as the other
   const matched = result.avatars.filter(box => box.y0 === 24 || box.y0 === 307);
   assert.equal(matched.length, 2);
   assert.equal(new Set(matched.map(box => result.speakerIds.get(box))).size, 1);
+});
+
+test("rereads the header when sparse OCR keeps only the first letter and a broken member count", () => {
+  const pic = frame();
+  const start = pic.label("H", 24, 17);
+  pic.lines[0].confidence = 33;
+  const count = pic.label("7)", 243, 17);
+  pic.lines[1].confidence = 70;
+  pic.label("?", 752, 17);
+  for (const y of [104, 234]) {
+    pic.avatar(22, y, [176, 197, 231]);
+    pic.fill(81, y + 22, 232, 47, [230, 231, 235], 9);
+    pic.label("Message", 100, y + 37);
+  }
+  const { groupTitle, titleCrop, messages } = findRegions(pic, pic.lines, model);
+  assert.equal(groupTitle, null);
+  assert.equal(messages.length, 2);
+  assert(covers([titleCrop], { ...start, x1: count.x1 }));
+  assert(titleCrop.x1 < pic.lines[2].box.x0);
+  assert(titleCrop.y1 < messages[0].y0);
+});
+
+test("covers the member count when it is attached to the name", () => {
+  const pic = frame();
+  const text = "Home 城市!(12)";
+  pic.label(text, 24, 17);
+  const line = pic.lines[0];
+  assert.deepEqual(titleBounds(line), line.box);
+});
+
+test("rereads a title when OCR joined only the initial and the member count", () => {
+  const pic = frame();
+  const title = pic.label("Go team 周末 (4)", 27, 17);
+  const line = pic.lines[0];
+  const count = line.text.indexOf("(");
+  line.text = "G (4)";
+  line.spans = [line.spans[0], ...line.spans.filter(span => span.start >= count).map(span => ({
+    ...span, start: span.start - count + 2, end: span.end - count + 2,
+  }))];
+  line.confidence = 92;
+  for (const y of [105, 234]) {
+    pic.avatar(23, y, [176, 197, 231]);
+    pic.fill(81, y + 23, 232, 47, [230, 231, 235], 9);
+    pic.label("Message", 100, y + 38);
+  }
+  const { groupTitle, titleCrop } = findRegions(pic, pic.lines, model);
+  assert.equal(groupTitle, null);
+  assert(covers([titleCrop], title));
+});
+
+test("finds the title above a chat divider when sparse OCR missed the name and member count", () => {
+  const pic = frame();
+  const title = pic.label("Hi room 周末 (14)", 32, 19, false);
+  const control = pic.label("Call", 628, 19);
+  pic.fill(10, 56, pic.width - 20, 2, [237, 237, 237]);
+  for (const y of [78, 234]) {
+    pic.avatar(22, y, [176, 197, 231]);
+    pic.fill(81, y + 23, 232, 47, [230, 231, 235], 9);
+    pic.label("Message", 100, y + 38);
+  }
+  const { groupTitle, titleCrop, messages } = findRegions(pic, pic.lines, model);
+  assert.equal(groupTitle, null);
+  assert.equal(messages.length, 2);
+  assert(covers([titleCrop], title));
+  assert(titleCrop.x1 < control.x0);
+  assert(titleCrop.y1 < 56);
 });

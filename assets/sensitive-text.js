@@ -14,6 +14,7 @@
   const rules = [
     { type: "credential", pattern: /(?:^|[^A-Z\d])(?:password|(?:access +)?token|(?:api|access|secret|private) *key|secret|authorization|密 *码|令 *牌|密 *钥|私 *钥) *[:=] *([^,;，；|]{2,120})/gi },
     { type: "credential", pattern: /\b(?:AKIA[A-Z0-9]{16}|gh[pousr]_[A-Z0-9]{24,}|github_pat_[A-Z0-9_]{24,}|sk-[A-Z0-9_-]{16,}|eyJ[A-Z0-9_-]+ *\. *[A-Z0-9_-]+ *\. *[A-Z0-9_-]+)\b/gi },
+    { type: "url", pattern: /(?<![A-Z0-9_])(?:https? *: *\/ *\/ *|www\.)[A-Z0-9][A-Z0-9._~%!?$&*+,;=:@/#-]*(?<![.,;:!?])/gi },
     { type: "email", pattern: /[A-Z0-9_%+'-]+(?: *\. *[A-Z0-9_%+'-]+)* *@ *(?:[A-Z0-9-]+ *\. *)+[A-Z]{2,24}\b/gi },
     { type: "identity", pattern: /(?<!\d)\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dX](?![\dX])/gi },
     { type: "card", pattern: /(?<!\d)\d(?:[ -]?\d){12,18}(?![ -]?\d)/g, validate: isCard },
@@ -89,9 +90,49 @@
     return lines;
   }
 
-  function runs(line, excludedAreas = []) {
+  function coverage(box, area) {
+    const width = Math.min(box.x1, area.x1) - Math.max(box.x0, area.x0);
+    const height = Math.min(box.y1, area.y1) - Math.max(box.y0, area.y0);
+    const size = (box.x1 - box.x0) * (box.y1 - box.y0);
+    return width > 0 && height > 0 && size > 0 ? width * height / size : 0;
+  }
+
+  function mergeMessageLines(lines, messages, readings) {
+    const best = new Map();
+    for (const [crop, { line, confidence }] of readings) {
+      if (!line || !(confidence >= 65) || crop.outlined || crop.addressPrefix || !/[\p{L}\p{N}]/u.test(line.text)) continue;
+      // A retry of only the nickname cannot replace the rest of the message.
+      const message = messages.find(box => coverage(box, crop) >= .82 && coverage(line.box, box) >= .94);
+      if (message && (!best.has(message) || confidence > best.get(message).confidence)) {
+        best.set(message, { line, confidence });
+      }
+    }
+
+    const replaced = new Set();
+    const recovered = [];
+    for (const [message, { line, confidence }] of best) {
+      const sameRow = lines.filter(original => {
+        const { box } = original;
+        const middle = (box.y0 + box.y1) / 2;
+        return middle >= message.y0 && middle <= message.y1 &&
+          (coverage(line.box, box) >= .55 || coverage(box, line.box) >= .55);
+      });
+      // Keep a well-positioned, stronger or more complete reading of the row.
+      if (sameRow.some(original => coverage(original.box, message) >= .94 &&
+          coverage(line.box, original.box) >= .8 &&
+          (original.confidence >= confidence || coverage(original.box, line.box) < .8))) continue;
+      for (const original of sameRow) {
+        if (coverage(original.box, message) < .94 || coverage(original.box, line.box) >= .8) replaced.add(original);
+      }
+      recovered.push(line);
+    }
+    return [...lines.filter(line => !replaced.has(line)), ...recovered];
+  }
+
+  function runs(line, excludedAreas = [], { skipSeparators = false } = {}) {
     const groups = [];
     let group;
+    let afterExcluded = false;
     for (const span of line.spans) {
       if (!span.box) continue;
       const covered = excludedAreas.some(area => {
@@ -104,8 +145,11 @@
       if (covered) {
         // OCR may read details in an avatar or join it to another element.
         group = null;
+        afterExcluded = true;
         continue;
       }
+      if (skipSeparators && afterExcluded && /^[,，:：]$/u.test(line.text.slice(span.start, span.end))) continue;
+      afterExcluded = false;
       const previous = group?.at(-1)?.box;
       if (previous) {
         const height = Math.max(previous.y1 - previous.y0, span.box.y1 - span.box.y0);
@@ -182,7 +226,7 @@
     return regions;
   }
 
-  const scanner = { readLines, findRegions, scaleBox, runs, boxForRange, exactBoxForRange };
+  const scanner = { readLines, mergeMessageLines, findRegions, scaleBox, runs, boxForRange, exactBoxForRange };
   if (typeof module !== "undefined") module.exports = scanner;
   else window.SensitiveText = scanner;
 })();
