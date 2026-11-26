@@ -4,7 +4,7 @@
 
 **Redact screenshots in your browser without uploading them.** Your screenshots and recognized text stay on your device.
 
-Open a screenshot and the editor automatically selects avatars and likely sensitive text. Review the boxes, adjust them if needed, and export a PNG. [Open Screenshot Redactor](https://ostrovsky2056.github.io/screenshot-redactor/)
+Open a screenshot to automatically select avatars, nicknames, and likely sensitive text. Review and resize the masks, then copy the redacted image or export a PNG at the original dimensions. [Open Screenshot Redactor](https://ostrovsky2056.github.io/screenshot-redactor/)
 
 ## Example
 
@@ -16,9 +16,9 @@ See how the editor selects avatars, nicknames, and an email address in a fiction
 
 1. Choose, drop, or paste a PNG, JPEG, or WebP screenshot. The editor looks for avatars, faces, and sensitive text in English and Simplified Chinese.
 2. Review the dashed boxes. Red boxes are selected for masking. Gray boxes are available to select, and amber boxes flag name boundaries that need a closer look. Click a box to toggle it, drag a corner of a selected box to resize it, or drag elsewhere to add a box. You can undo changes. Clearing the selection keeps the detected boxes available.
-3. Choose a mask style and adjust its opacity. Gaussian blur also has a strength control. Mark speakers replaces each recognized speaker’s avatars with a matching illustration generated in the browser. In Speaker avatars, you can assign a PNG, JPEG, or WebP from your device to a speaker or restore their default illustration. Selected names beside avatars are filled with the nearby background color by default. Preview the result, then copy the redacted image or export a PNG at the original dimensions.
+3. Choose a mask style and adjust its opacity. Gaussian blur also has a strength control. Mark speakers replaces each recognized speaker’s avatars with an illustration generated in the browser. In Speaker avatars, you can assign a PNG, JPEG, or WebP from your device to a speaker or restore their default illustration. Quotes matched to a speaker use that speaker’s replacement avatar too. Selected names beside avatars are filled with the nearby background color by default. Preview the result, then copy the redacted image or export a PNG at the original dimensions.
 
-Text recognition covers common email addresses, phone numbers, IDs, payment card numbers, credentials, and names. In chat, the editor uses the positions of avatars, bubbles, and text to find speakers. It looks for names and nicknames inside messages and quoted replies and masks the recognized names. Review and adjust suggestions before export.
+Text recognition covers common web links, email addresses, phone numbers, IDs, payment card numbers, credentials, and names. In chat, the editor uses the positions of avatars, text bubbles, and cards for images, videos, links, mini programs, and files to find speakers. It also looks for names and nicknames in messages and quoted replies. The editor aligns the height of similar single-line text masks when there’s room to expand them. Review and adjust suggestions before export.
 
 ## On-device processing
 
