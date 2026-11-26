@@ -29,13 +29,13 @@
     return (Math.floor(y) * pixels.width + Math.floor(x)) * 4;
   }
 
-  function dominantTone(pixels) {
+  function dominantTone(pixels, { x0 = 0, y0 = 0, x1 = pixels.width, y1 = pixels.height } = {}) {
     const counts = new Map();
     const step = Math.max(6, Math.round(Math.min(pixels.width, pixels.height) / 48));
     let total = 0;
     let dominant = [0, 0, 0, 0];
-    for (let y = step / 2; y < pixels.height; y += step) {
-      for (let x = step / 2; x < pixels.width; x += step) {
+    for (let y = y0 + step / 2; y < y1; y += step) {
+      for (let x = x0 + step / 2; x < x1; x += step) {
         const i = pixelIndex(pixels, x, y);
         const [r, g, b] = pixels.data.subarray(i, i + 3);
         const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
@@ -53,7 +53,7 @@
     return dominant.slice(1).map(channel => channel / dominant[0]);
   }
 
-  function components(pixels, tone, startY = 0, endY = pixels.height) {
+  function components(pixels, tone, startY = 0, endY = pixels.height, contrast = 14, chroma = 0) {
     const step = Math.max(1, Math.ceil(Math.max(pixels.width, pixels.height) / 840));
     const cols = Math.ceil(pixels.width / step);
     const rows = Math.ceil((endY - startY) / step);
@@ -62,7 +62,14 @@
     for (let i = 0; i < occupied.length; i++) {
       const x = (i % cols) * step;
       const y = startY + Math.floor(i / cols) * step;
-      occupied[i] = Number(distance(pixels.data, pixelIndex(pixels, x, y), tone) > 14);
+      const index = pixelIndex(pixels, x, y);
+      const { data } = pixels;
+      if (distance(data, index, tone) <= contrast) continue;
+      if (chroma) {
+        const r = data[index], g = data[index + 1], b = data[index + 2];
+        if (Math.max(r, g, b) - Math.min(r, g, b) < chroma) continue;
+      }
+      occupied[i] = 1;
     }
     const shapes = [];
     for (let cell = 0; cell < occupied.length; cell++) {
@@ -233,14 +240,14 @@
     return columns;
   }
 
-  function pixelNickname(pixels, tone, area, edge, side, size) {
+  function pixelNickname(pixels, tone, area, edge, side, size, gap = Math.max(4, size * .13)) {
     const columns = inkColumns(pixels, tone, area);
     if (side === "right") columns.reverse();
     const nearest = columns[0];
     if (!nearest || Math.abs(nearest.x0 - edge) > size * .43) return null;
     const chain = [nearest];
     for (const column of columns.slice(1)) {
-      if (Math.abs(column.x0 - chain[chain.length - 1].x0) > Math.max(4, size * .13)) break;
+      if (Math.abs(column.x0 - chain[chain.length - 1].x0) > gap) break;
       chain.push(column);
     }
     const box = bounds(chain);
@@ -517,6 +524,475 @@
     return chatBelow ? { groupTitle: null, titleCrop: titleCropAboveDivider(pixels, candidates, divider) } : empty;
   }
 
+  function colorShare(pixels, box) {
+    const step = Math.max(1, Math.floor(Math.min(width(box), height(box)) / 9));
+    let vivid = 0;
+    let sampled = 0;
+    for (let y = box.y0; y < box.y1; y += step) {
+      for (let x = box.x0; x < box.x1; x += step) {
+        const i = pixelIndex(pixels, x, y);
+        const { data } = pixels;
+        const high = Math.max(data[i], data[i + 1], data[i + 2]);
+        const low = Math.min(data[i], data[i + 1], data[i + 2]);
+        if (high - low >= 22) vivid++;
+        sampled++;
+      }
+    }
+    return vivid / sampled;
+  }
+
+  function toolbarText(pixels, tone, area, gap, leadingGap = gap) {
+    const columns = inkColumns(pixels, tone, area);
+    if (!columns.length || columns[0].x0 - area.x0 > leadingGap) return null;
+    let end = 1;
+    while (end < columns.length && columns[end].x0 - columns[end - 1].x1 <= gap) end++;
+    return bounds(columns.slice(0, end));
+  }
+
+  function textRows(pixels, tone, area) {
+    const rows = [];
+    for (let y = Math.ceil(area.y0); y < area.y1; y++) {
+      let ink = 0;
+      for (let x = Math.ceil(area.x0); x < area.x1; x++) {
+        if (distance(pixels.data, pixelIndex(pixels, x, y), tone) > 85) ink++;
+      }
+      if (ink < 2) continue;
+      const last = rows.at(-1);
+      if (last && y - last.y1 <= 1) last.y1 = y + 1;
+      else rows.push({ y0: y, y1: y + 1 });
+    }
+    return rows;
+  }
+
+  function phoneEdges(pixels, center) {
+    const { width: w, height: h, data } = pixels;
+    function edge(direction) {
+      for (let x = Math.round(center); x >= 0 && x < w; x += direction) {
+        let dark = 0;
+        for (let probe = 0; probe < 12; probe++) {
+          const y = (.36 + .033 * probe) * h;
+          const i = pixelIndex(pixels, x, y);
+          if (Math.max(data[i], data[i + 1], data[i + 2]) < 55) dark++;
+        }
+        if (dark >= 10) return x - direction;
+      }
+      return direction < 0 ? 0 : w;
+    }
+    return { x0: edge(-1), x1: edge(1) };
+  }
+
+  function centeredHeader(pixels, tone, shapes, lines) {
+    const { width: w, height: h, data } = pixels;
+    if (Math.min(...tone) < 200) return null;
+    const notch = shapes.find(box => {
+      if (box.y0 >= .17 * h || height(box) < 9 || width(box) <= .11 * w || width(box) > .38 * w ||
+          width(box) < height(box) * 2.4 || width(box) >= height(box) * 6.5 || box.fill < .72) return false;
+      const center = pixelIndex(pixels, (box.x0 + box.x1) / 2, centerY(box));
+      return Math.max(data[center], data[center + 1], data[center + 2]) < 50;
+    });
+    if (!notch) return null;
+    const middle = (notch.x0 + notch.x1) / 2;
+    const pane = phoneEdges(pixels, middle);
+    const portrait = shapes.find(box => box.y0 >= notch.y1 && box.y0 - notch.y1 < .7 * height(notch) &&
+      width(box) >= .32 * width(notch) && width(box) <= .72 * width(notch) &&
+      Math.abs((box.x0 + box.x1) / 2 - middle) <= .2 * width(box) &&
+      Math.abs(width(box) - height(box)) <= .28 * width(box) && colorShare(pixels, box) >= .24);
+    if (!portrait) return null;
+    const size = height(portrait);
+    const controls = shapes.some(box => Math.abs(centerY(box) - centerY(portrait)) <= .52 * size &&
+      (box.x1 < portrait.x0 - size || box.x0 > portrait.x1 + size) &&
+      box.x0 >= pane.x0 && box.x1 <= pane.x1 && width(box) > .14 * size && height(box) >= .16 * size);
+    if (!controls) return null;
+    const line = lines.find(({ box, text, confidence }) => confidence >= 48 &&
+      /\p{L}[\p{L}\p{N}]/u.test(text) && !/[!?]$/.test(text) &&
+      box.y0 >= portrait.y1 - .10 * size && box.y0 <= portrait.y1 + .30 * size &&
+      height(box) <= .47 * size && Math.abs((box.x0 + box.x1) / 2 - middle) < .22 * size &&
+      box.x0 >= pane.x0 && box.x1 <= pane.x1);
+    if (!line) return null;
+    const title = { x0: Math.max(pane.x0, line.box.x0 - 2), y0: Math.max(portrait.y1, line.box.y0 - 2),
+      x1: Math.min(pane.x1, line.box.x1 + 2), y1: line.box.y1 + 2 };
+    return { kind: "centered", title, portrait, pane, bodyTop: title.y1 + .20 * size, confirmed: true };
+  }
+
+  function memberStatus(text) {
+    return /^\s*\d[\d,. ]*\s*(?:online|active|members?|人(?:在线|活跃)?|在线|活跃)\s*$/iu.test(text);
+  }
+
+  function inlineHeader(pixels, tone, shapes, lines, profiles) {
+    const { width: w, height: h } = pixels;
+    const compact = shapes.filter(box => width(box) >= 3 && height(box) >= 3);
+    const minimum = Math.max(13, Math.min(w, h) * .021);
+    const maximum = Math.min(w, h) * .18;
+    const portraits = compact.filter(box => {
+      const boxWidth = width(box), boxHeight = height(box);
+      return box.y0 < Math.min(.19 * h, .23 * w) && Math.min(boxWidth, boxHeight) >= minimum &&
+        Math.max(boxWidth, boxHeight) <= maximum && boxWidth / boxHeight >= .76 &&
+        boxWidth / boxHeight <= 1.31 && box.fill >= .37 && colorShare(pixels, box) >= .16;
+    });
+    for (const portrait of portraits) {
+      const size = height(portrait);
+      const wide = w > h * 1.15 && portrait.x0 > .23 * w && portrait.x1 < .67 * w;
+      const control = box => Math.abs(centerY(box) - centerY(portrait)) < .47 * size &&
+        height(box) >= Math.max(3, size * .075) && height(box) <= .86 * size &&
+        width(box) <= 1.08 * size;
+      const leading = !wide ? portrait.x0 < .24 * w && compact.some(box =>
+        box.x1 < portrait.x0 - 2 && portrait.x0 - box.x1 < 1.7 * size && control(box)) :
+        compact.some(box => box.y0 >= portrait.y1 + .28 * size && box.y0 <= portrait.y1 + 2.5 * size &&
+          Math.abs(box.x0 - portrait.x0) <= .18 * size && Math.abs(width(box) - width(portrait)) < .25 * size);
+      if (!leading) continue;
+      const right = compact.filter(box => box.x0 > portrait.x1 + 1.25 * size && box.x0 > .62 * w && control(box));
+      if (!right.length) continue;
+      const start = portrait.x1 + 2;
+      const rowEnd = Math.min(w, start + Math.ceil(.88 * size));
+      const rows = textRows(pixels, tone, { x0: start, x1: rowEnd, y0: portrait.y0, y1: portrait.y1 })
+        .filter(row => height(row) >= .17 * size && height(row) <= .72 * size);
+      const row = rows.find(row => row.y0 < centerY(portrait) + .13 * size);
+      if (!row) continue;
+      const gap = Math.max(4, Math.round(height(row) * .62));
+      const title = toolbarText(pixels, tone, { x0: start, x1: w - 2,
+        y0: Math.max(portrait.y0, row.y0 - 1), y1: Math.min(portrait.y1, row.y1 + 1) }, gap, Math.max(gap, .36 * size));
+      if (!title || width(title) < .50 * size || width(title) >= .69 * w ||
+        right.some(box => overlap(box, title) > .45 && width(box) >= .55 * size)) continue;
+      if (!right.some(box => box.x0 - title.x1 >= Math.max(4, .14 * size))) continue;
+      const evidence = lines.filter(({ box }) => box.x0 >= start - 2 && box.x0 <= title.x0 + size * .55 &&
+        box.y0 >= title.y1 && box.y1 <= portrait.y1 + size * .12);
+      const countLine = evidence.find(({ text }) => memberStatus(text));
+      const isChat = profiles.some(({ bubble }) => bubble.y0 >= portrait.y1) || countLine;
+      if (!isChat) continue;
+      const count = countLine && { ...countLine.box };
+      const second = !count && !wide && rows.find(part => part.y0 >= title.y1 + 2 && height(part) < height(row) * .85);
+      const status = second && toolbarText(pixels, tone, { x0: start, x1: Math.min(w, start + 3 * size),
+        y0: second.y0, y1: Math.min(portrait.y1 + 1, second.y1 + 1) }, Math.max(4, height(second) * .75));
+      const label = wide && lines.some(line => {
+        if (line.confidence < 58) return false;
+        const spans = spanBoxes(line, title);
+        if (!spans.length) return false;
+        const value = line.text.slice(spans[0].start, spans.at(-1).end);
+        return /\p{L}.*\p{L}/u.test(value);
+      });
+      return { kind: wide ? "split" : "inline", title: {
+        x0: Math.max(portrait.x1, title.x0 - 2), x1: title.x1 + 2,
+        y0: title.y0 - 2, y1: Math.min(count?.y0 ?? portrait.y1 + 1, title.y1 + 2),
+      }, portrait, count, status, pane: { x0: wide ? portrait.x0 - .38 * size : 0, x1: w },
+      bodyTop: Math.ceil(portrait.y1 + .12 * size), confirmed: label };
+    }
+    return null;
+  }
+
+  function numberedHeader(pixels, tone, shapes, lines) {
+    const { width: w, height: h } = pixels;
+    const line = lines.find(({ box, text, confidence }) => confidence >= 32 && box.y0 < .09 * h &&
+      box.x0 < .28 * w && box.x1 < .77 * w && /[（([\s]\s*\d{1,4}\s*[)）\]]\s*$/u.test(text) &&
+      /\p{L}/u.test(text));
+    if (!line) return null;
+    const band = { y0: line.box.y0, y1: line.box.y1 };
+    const controls = shapes.filter(box => box.y0 < band.y1 && box.y1 > band.y0 && width(box) >= 4 &&
+      width(box) < .10 * w && height(box) >= 2 && height(box) < .085 * h);
+    const left = controls.find(box => box.x1 <= line.box.x0 + .04 * w && box.x0 < .21 * w);
+    const right = controls.find(box => box.x0 > .78 * w && box.x0 - line.box.x1 > .08 * w);
+    if (!left || !right) return null;
+    const start = left.x1 + 2;
+    const row = textRows(pixels, tone, { ...band, x0: start, x1: Math.min(line.box.x1, start + .21 * w) })
+      .find(row => height(row) >= 5);
+    if (!row) return null;
+    const title = toolbarText(pixels, tone, { y0: Math.max(0, row.y0 - 1), y1: row.y1 + 1,
+      x0: start, x1: right.x0 }, Math.max(4, .036 * w));
+    if (!title || width(title) < .16 * w || title.x1 < line.box.x1 - .08 * w) return null;
+    return { kind: "numbered", title: { x0: title.x0 - 1, x1: title.x1 + 2,
+      y0: Math.max(0, title.y0 - 1), y1: title.y1 + 2 }, pane: { x0: 0, x1: w },
+    bodyTop: Math.ceil(Math.max(title.y1, right.y1) + .01 * h), confirmed: true };
+  }
+
+  function conversationHeader(pixels, tone, lines, profiles = []) {
+    if (!tone) return null;
+    const top = Math.ceil(Math.min(.43 * pixels.height, .46 * pixels.width));
+    const strong = components(pixels, tone, 0, top, 53);
+    const centered = centeredHeader(pixels, tone, strong, lines);
+    if (centered) return { ...centered, tone };
+    const shapes = components(pixels, tone, 0, top, 20);
+    const header = inlineHeader(pixels, tone, shapes, lines, profiles) || numberedHeader(pixels, tone, strong, lines);
+    return header && { ...header, tone };
+  }
+
+  function portraitShapes(pixels, tone, top, minimum, maximum) {
+    const start = Math.max(0, Math.floor(top));
+    const sharp = components(pixels, tone, start, pixels.height, 48);
+    const colors = components(pixels, tone, start, pixels.height, 32, 24);
+    const portraits = avatarCandidates([...sharp, ...colors], minimum, maximum)
+      .filter(box => colorShare(pixels, box) >= .18)
+      .sort((a, b) => {
+        const square = box => Math.min(width(box), height(box)) / Math.max(width(box), height(box));
+        return square(b) - square(a) || length(b) - length(a);
+      });
+    const distinct = [];
+    for (const box of portraits) {
+      if (!distinct.some(other => overlap(box, other) >= .75)) distinct.push(box);
+    }
+    return distinct;
+  }
+
+  function closeLane(a, b) {
+    const size = Math.min(width(a), width(b));
+    return Math.abs((a.x0 + a.x1 - b.x0 - b.x1) / 2) <= .32 * size &&
+      Math.abs(width(a) - width(b)) <= .36 * size && Math.abs(centerY(a) - centerY(b)) >= .8 * size;
+  }
+
+  function nearbyMessage(lines, avatar, side, pane) {
+    const size = length(avatar);
+    return lines.some(({ box, text }) => {
+      const gap = side === "left" ? box.x0 - avatar.x1 : avatar.x0 - box.x1;
+      return box.x0 >= pane.x0 && box.x1 <= pane.x1 && /\p{L}/u.test(text) && gap >= 0 &&
+        gap <= 2.2 * size && box.y0 <= avatar.y1 + .5 * size && box.y1 >= avatar.y0 - 2.4 * size;
+    });
+  }
+
+  function listName(lines, avatar, end, below = false) {
+    const size = length(avatar);
+    const area = below ? { x0: avatar.x0 - .12 * size, x1: avatar.x1 + .12 * size,
+      y0: avatar.y1 + .04 * size, y1: avatar.y1 + .50 * size } :
+      { x0: avatar.x1 + .06 * size, x1: Math.min(avatar.x1 + 4 * size, end),
+        y0: avatar.y0 - .06 * size, y1: avatar.y0 + .51 * size };
+    const choices = [];
+    for (const line of lines) {
+      const spans = spanBoxes(line, area);
+      if (!spans.length) continue;
+      const label = line.text.slice(spans[0].start, spans.at(-1).end);
+      if (!/\p{L}/u.test(label) || /[:：[\]]/.test(label) || label.length > 38) continue;
+      const box = bounds(spans.map(span => span.box));
+      if (box.x0 < area.x0 - .15 * size || !below && box.x0 - avatar.x1 > .70 * size ||
+          height(box) < .12 * size || height(box) > .64 * size) continue;
+      choices.push({ box, label });
+    }
+    return choices.sort((a, b) => a.box.y0 - b.box.y0)[0] || null;
+  }
+
+  function sidebarPortraits(pixels, lines, shapes, header) {
+    if (header.kind !== "split") return { entries: [], bounds: null };
+    const end = header.pane.x0;
+    const size = width(header.portrait);
+    const sidebar = shapes.filter(box => box.x1 <= end && width(box) >= size && width(box) <= 2.3 * size);
+    const named = sidebar.map(avatar => ({ avatar, name: listName(lines, avatar, end) })).filter(({ name }) => name);
+    let lane = [];
+    for (const row of named) {
+      const aligned = named.filter(other => other === row || closeLane(other.avatar, row.avatar));
+      if (aligned.length > lane.length) lane = aligned;
+    }
+    if (lane.length < 3) return { entries: [], bounds: null };
+    lane.sort((a, b) => a.avatar.y0 - b.avatar.y0);
+    const first = lane[0].avatar;
+    const rowSize = Math.round(length(first));
+    const gaps = lane.slice(1).map(({ avatar }, i) => avatar.y0 - lane[i].avatar.y0)
+      .filter(gap => gap >= rowSize * 1.04 && gap <= 1.65 * rowSize).sort((a, b) => a - b);
+    if (gaps.length >= 2) {
+      const middle = Math.floor(gaps.length / 2);
+      const pitch = Math.round((gaps[middle] + gaps[Math.floor((gaps.length - 1) / 2)]) / 2);
+      for (let y = first.y0 + pitch; y + .34 * rowSize < pixels.height; y += pitch) {
+        const avatar = { x0: first.x0, x1: first.x1, y0: y, y1: Math.min(pixels.height, y + rowSize) };
+        if (lane.some(row => overlap(avatar, row.avatar) > .55) || colorShare(pixels, avatar) < .16) continue;
+        const name = listName(lines, avatar, end);
+        const clipped = height(avatar) < rowSize;
+        if (name || clipped) lane.push({ avatar: { ...avatar, clipped }, name });
+      }
+    }
+    const shortcuts = sidebar.filter(box => box.y1 < first.y0 - .35 * rowSize &&
+      Math.abs(width(box) - rowSize) <= .35 * rowSize);
+    const strip = shortcuts.filter(box => shortcuts.filter(other => Math.abs(other.y0 - box.y0) < .30 * rowSize).length >= 3);
+    const entries = [...lane, ...strip.map(avatar => ({ avatar, name: listName(lines, avatar, end, true) }))];
+    return { entries, bounds: { x0: Math.max(0, first.x0 - .18 * rowSize), x1: end,
+      y0: Math.min(first.y0, ...strip.map(box => box.y0)) - 3, y1: pixels.height } };
+  }
+
+  function additionalPortraits(pixels, lines, header, knownAvatars, profiles = []) {
+    const { pane } = header;
+    const paneWidth = pane.x1 - pane.x0;
+    const tone = header.tone;
+    const size = header.portrait ? length(header.portrait) : paneWidth * .16;
+    const minimum = Math.max(10, .40 * size);
+    const maximum = header.kind === "split" ? 2.3 * size : 1.42 * size;
+    const shapes = portraitShapes(pixels, tone, header.bodyTop, minimum, maximum);
+    const sidebar = sidebarPortraits(pixels, lines, shapes, header);
+    const candidates = shapes.filter(box => {
+      const edge = Math.min(box.x0 - pane.x0, pane.x1 - box.x1);
+      return edge >= -2 && edge <= Math.min(paneWidth * .14, .95 * width(box)) &&
+        centerY(box) < .90 * pixels.height && (header.kind !== "split" || length(box) <= 1.4 * size);
+    });
+    const entries = [...sidebar.entries];
+    for (const avatar of candidates) {
+      const side = (avatar.x0 + avatar.x1) / 2 < (pane.x0 + pane.x1) / 2 ? "left" : "right";
+      const lane = [...knownAvatars, ...candidates].some(other => closeLane(avatar, other));
+      if (!lane && !nearbyMessage(lines, avatar, side, pane)) continue;
+      entries.push({ avatar: { ...avatar, topLimit: Math.floor(header.bodyTop) - 2 }, side });
+    }
+    const names = entries.filter(({ name }) => name).map(({ name }) => name.box);
+    const avatars = entries.map(({ avatar }) => avatar);
+    if (header.portrait) avatars.unshift(header.portrait);
+    const artworkLabels = new Set(profiles.filter(({ name }) => name && !name.label && colorShare(pixels, name.box) >= .28)
+      .map(({ name }) => name.box));
+    return { avatars, names, artworkLabels, sidebar: sidebar.bounds };
+  }
+
+  function nicknameAboveMessage(pixels, header, { bubble, avatar }, previous) {
+    const size = length(avatar);
+    const area = {
+      x0: bubble.x0 + .14 * size,
+      x1: Math.min(header.pane.x1, bubble.x0 + 4.2 * size),
+      y0: Math.max(header.bodyTop, bubble.y0 - .76 * size, (previous?.y1 ?? 0) + 1),
+      y1: bubble.y0 - 1,
+    };
+    if (height(area) < .19 * size) return null;
+    const tone = dominantTone(pixels, area) || header.tone;
+    const name = pixelNickname(pixels, tone, area, bubble.x0 + .42 * size, "left", size, Math.max(6, size * .31));
+    return name && width(name) >= .46 * size && height(name) <= .52 * size ? name : null;
+  }
+
+  function leftMessageRows(pixels, header, avatars, profiles) {
+    if (header.kind === "inline") return profiles.filter(({ avatar, bubble, side }) =>
+      side === "left" && bubble.y0 >= header.bodyTop && bubble.y0 <= avatar.y0 + .06 * length(avatar));
+    if (header.kind !== "centered") return [];
+    const { pane, tone } = header;
+    const incoming = avatars.filter(box => box !== header.portrait && box.y0 >= header.bodyTop &&
+      box.x0 >= pane.x0 && box.x1 < pane.x0 + .27 * width(pane));
+    const rows = [];
+    const shapes = components(pixels, tone, Math.ceil(header.bodyTop), Math.floor(.91 * pixels.height), 55);
+    for (const bubble of shapes) {
+      if (bubble.fill < .66 || bubble.x1 > pane.x1) continue;
+      const avatar = incoming.find(box => {
+        const size = length(box);
+        const gap = bubble.x0 - box.x1;
+        return gap >= 0 && gap <= .68 * size && width(bubble) >= 1.6 * size && height(bubble) >= .67 * size &&
+          box.y0 < bubble.y1 + 2 * size && box.y1 > bubble.y0 - .5 * size;
+      });
+      if (avatar && surface(pixels, bubble, tone).flatness >= .43) rows.push({ bubble, avatar });
+    }
+    return rows;
+  }
+
+  function labelInk(pixels, box) {
+    const rgb = [0, 0, 0];
+    let count = 0;
+    for (let y = Math.ceil(box.y0); y < box.y1; y++) {
+      for (let x = Math.ceil(box.x0); x < box.x1; x++) {
+        const i = pixelIndex(pixels, x, y);
+        const { data } = pixels;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (Math.max(r, g, b) - Math.min(r, g, b) < 28 || Math.min(r, g, b) > 192) continue;
+        rgb[0] += r;
+        rgb[1] += g;
+        rgb[2] += b;
+        count++;
+      }
+    }
+    return count >= 5 ? rgb.map(value => value / count) : null;
+  }
+
+  function repeatedMessageSenders(pixels, lines, header, labels) {
+    // Some conversations omit the avatar on later messages from the same sender.
+    const repeated = [];
+    for (const label of labels) {
+      const source = lines.find(({ box, text, confidence }) => confidence >= 55 && box.x0 >= label.x0 - 2 &&
+        box.x1 <= label.x1 + 2 && overlap(box, label) >= .65 && /^[\p{L}\p{M}\p{N} ._'’-]{2,40}$/u.test(text));
+      if (!source) continue;
+      const ink = labelInk(pixels, source.box);
+      if (!ink) continue;
+      const size = height(source.box);
+      for (const entry of lines) {
+        const { box } = entry;
+        if (entry === source || entry.text !== source.text || entry.confidence < 55 || box.y0 < header.bodyTop ||
+            Math.abs(box.x0 - source.box.x0) > .35 * size || Math.abs(height(box) - size) > .25 * size) continue;
+        const color = labelInk(pixels, box);
+        if (color && color.every((value, i) => Math.abs(value - ink[i]) < 24)) repeated.push({ ...box });
+      }
+    }
+    return repeated;
+  }
+
+  function messageSenderLayout(pixels, lines, header, avatars, profiles, known) {
+    const rows = leftMessageRows(pixels, header, avatars, profiles).sort((a, b) => a.bubble.y0 - b.bubble.y0);
+    const labels = [];
+    let previous;
+    for (const row of rows) {
+      const name = nicknameAboveMessage(pixels, header, row, previous);
+      if (name) labels.push(name);
+      previous = row.bubble;
+    }
+    return {
+      names: [...labels, ...repeatedMessageSenders(pixels, lines, header, [...known, ...labels])],
+      bodies: rows.map(({ bubble }) => bubble),
+    };
+  }
+
+  function captionCrop(pixels, tone, area, size, kind) {
+    const columns = inkColumns(pixels, tone, area);
+    if (!columns.length) return null;
+    const box = bounds(columns);
+    return width(box) >= 1.2 * size && height(box) >= .14 * size && height(box) <= .41 * size
+      ? { ...box, kind } : null;
+  }
+
+  function messageCaptionCrops(pixels, header) {
+    if (header.kind !== "inline" || !header.portrait || header.count) return [];
+    const { pane, tone } = header;
+    const size = length(header.portrait);
+    const bottom = Math.floor(.91 * pixels.height);
+    const shapes = components(pixels, tone, Math.ceil(header.bodyTop), bottom, 19)
+      .filter(box => box.x0 >= pane.x0 && box.x1 <= pane.x1 && height(box) >= .58 * size && box.fill >= .61);
+    const bubbles = shapes.filter(box => width(box) >= 1.45 * size && height(box) <= 3.1 * size);
+    const crops = [];
+    for (const rail of shapes) {
+      if (width(rail) > .24 * size || height(rail) > 1.62 * size || rail.fill < .72) continue;
+      const left = rail.x0 < (pane.x0 + pane.x1) / 2;
+      const bubble = bubbles.find(box => {
+        const gap = left ? box.x0 - rail.x1 : rail.x0 - box.x1;
+        return gap >= .06 * size && gap < .63 * size && Math.abs(box.y0 - rail.y0) < .19 * size &&
+          Math.abs(height(box) - height(rail)) < .25 * size;
+      });
+      if (!bubble) continue;
+      const area = {
+        x0: left ? Math.max(pane.x0, bubble.x0 - .18 * size) : bubble.x0,
+        x1: left ? bubble.x1 : Math.min(pane.x1, bubble.x1 + .11 * size),
+        y0: Math.max(header.bodyTop, rail.y0 - .81 * size),
+        y1: rail.y0 - .15 * size,
+      };
+      const crop = captionCrop(pixels, tone, area, size, "reply");
+      if (crop && !crops.some(other => overlap(other, crop) > .65)) crops.push({ ...crop, bubble });
+    }
+    // A small receipt can follow the last outgoing message in a conversation with reply captions.
+    if (crops.length) {
+      const last = bubbles.filter(box => box.x1 > pane.x1 - .45 * size && box.y1 > .66 * pixels.height &&
+        colorShare(pixels, box) > .42).sort((a, b) => b.y1 - a.y1)[0];
+      if (last) {
+        const area = { x0: last.x0, x1: last.x1, y0: last.y1 + 1, y1: Math.min(bottom, last.y1 + .54 * size) };
+        const receipt = captionCrop(pixels, tone, area, size, "receipt");
+        if (receipt) crops.push(receipt);
+      }
+    }
+    return crops.slice(0, 12);
+  }
+
+  function captionNames(readings) {
+    const names = [];
+    for (const [crop, { line, confidence }] of readings) {
+      if (!line || confidence < 53) continue;
+      const { text } = line;
+      const match = crop.kind === "receipt" ? text.match(/^(?:seen\s+by\s+|已\s*读\s*[:：]\s*)(.+?)(?:\s*\+\s*\d+)?$/iu) :
+        text.match(/^(?:you\s+replied\s+to\s+|你\s*回\s*复\s*了?\s*)(.+?)[.。]?$/iu) ||
+        text.match(/^(.+?)(?:\s+replied\s+to\s+you|\s*回\s*复\s*了?\s*你)[.。]?$/iu);
+      if (!match) continue;
+      const value = match[1];
+      const start = crop.kind === "receipt" || /^(?:you\s+replied|你\s*回\s*复)/iu.test(text)
+        ? text.lastIndexOf(value) : match.index;
+      for (const part of value.matchAll(/[^,，]+/gu)) {
+        const name = part[0].trim();
+        if (!/^[\p{L}\p{M}\p{N} _.'’·-]{2,48}$/u.test(name) || !/\p{L}/u.test(name)) continue;
+        const from = start + part.index + part[0].indexOf(name);
+        const box = exactBoxForRange(line, from, from + name.length);
+        if (!box || overlap(box, crop) < .65) continue;
+        names.push({ text: name, box, bubble: crop.bubble });
+      }
+    }
+    return names;
+  }
+
   function sameAvatarFragment(pixels, tone, fragment, avatar, atStart) {
     const step = Math.max(1, Math.ceil(width(fragment) / 27));
     const samples = [];
@@ -703,8 +1179,12 @@
 
   function findRegions(pixels, lines, model, colorCrops = []) {
     const tone = dominantTone(pixels);
-    if (!tone) return { avatars: [], associatedNames: [], messages: [], quoteBodies: [], graphics: [],
-      profiles: [], quoteSenders: [], speakerIds: new Map() };
+    if (!tone) {
+      const topTone = dominantTone(pixels, { x0: .10 * pixels.width, x1: .90 * pixels.width,
+        y1: Math.min(.20 * pixels.height, .22 * pixels.width) });
+      return { header: conversationHeader(pixels, topTone, lines), avatars: [], associatedNames: [],
+        messages: [], quoteBodies: [], graphics: [], profiles: [], quoteSenders: [], speakerIds: new Map() };
+    }
     const shapes = components(pixels, tone);
     const shortest = Math.min(pixels.width, pixels.height);
     const minimum = Math.max(14, shortest * .028);
@@ -747,6 +1227,7 @@
       avatars,
       groupTitle,
       titleCrop,
+      header: groupTitle ? null : conversationHeader(pixels, tone, lines, profiles),
       associatedNames: [
         ...profiles.filter(({ name }) => name).map(({ name }) => name.box),
         ...senders.map(({ box }) => box),
@@ -760,7 +1241,8 @@
     };
   }
 
-  const chat = { findRegions, pairInputs, matchQuoteSpeakers, titleBounds };
+  const chat = { findRegions, pairInputs, matchQuoteSpeakers, titleBounds, additionalPortraits, memberStatus, messageSenderLayout,
+    messageCaptionCrops, captionNames };
   if (typeof module !== "undefined") module.exports = chat;
   else window.ChatLayout = chat;
 })();

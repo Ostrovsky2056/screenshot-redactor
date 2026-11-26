@@ -957,16 +957,25 @@
 
   function detections(lines, visual, inlineNames, image, sample) {
     const regions = SensitiveText.findRegions(lines, image, sample);
-    function add(box, type, margin, { enabled = true, pending = false, avatarNickname = false, quoteSender = false } = {}) {
+    function add(box, type, margin, {
+      enabled = true, pending = false, avatarNickname = false, quoteSender = false, preserveBounds = false,
+    } = {}) {
       const region = SensitiveText.scaleBox(box, type, image, sample, margin);
       if (!region) return;
+      if (type === "avatar" && box.topLimit !== undefined) {
+        const top = Math.max(region.y, Math.floor(box.topLimit * image.height / sample.height));
+        region.height -= top - region.y;
+        region.y = top;
+      }
       if (quoteSender && box.rightLimit !== undefined) {
         const limit = Math.floor(box.rightLimit * image.width / sample.width);
         region.width = Math.min(region.width, limit - region.x);
       }
       const speaker = visual.speakerIds.get(box);
-      const existing = regions.find(other => similar(other, region) || (contains(other, region) &&
-        (type === "name" || other.enabled !== false || (type === "graphic" && other.type === "text"))));
+      // A pending OCR suggestion must not block a later confirmed mask.
+      const existing = regions.find(other => (!enabled || !other.pending) &&
+        (similar(other, region) || (contains(other, region) &&
+          (type === "name" || other.enabled !== false || (type === "graphic" && other.type === "text")))));
       if (existing) {
         if (existing.type === type) {
           if (speaker !== undefined) existing.speaker ??= speaker;
@@ -977,16 +986,19 @@
         }
         return;
       }
-      regions.push({ ...region, enabled, speaker, pending, avatarNickname, quoteSender, clipped: !!box.clipped });
+      regions.push({ ...region, enabled, speaker, pending, avatarNickname, quoteSender, preserveBounds, clipped: !!box.clipped });
     }
     if (visual.groupTitle) add(visual.groupTitle, "name", 0);
+    if (visual.groupTitle && visual.header?.count) add(visual.header.count, "name", 1);
     for (const box of visual.avatars) add(box, "avatar", box.clipped ? 0 : 4);
     const quoteSenders = new Set(visual.quoteSenders.map(({ box }) => box));
     for (const box of visual.associatedNames) {
       const quoteSender = quoteSenders.has(box);
       add(box, "name", 2, { avatarNickname: !quoteSender, quoteSender });
     }
-    for (const { box, pending } of inlineNames) add(box, "name", 0, { enabled: !pending, pending });
+    for (const { box, pending, preserveBounds } of inlineNames) {
+      add(box, "name", 0, { enabled: !pending, pending, preserveBounds });
+    }
     const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
     const nicknames = visual.profiles.map(profile => profile.name).filter(name => name?.line);
     const knownRegions = [...visual.avatars, ...visual.associatedNames,
@@ -1003,7 +1015,8 @@
     }
     for (const box of visual.messages) add(box, "bubble", 0, { enabled: false });
     for (const box of visual.graphics) add(box, "graphic", 0, { enabled: false });
-    return SensitiveText.alignMaskHeights(regions, lines, visual.messages, image, sample);
+    SensitiveText.alignMaskHeights(regions.filter(region => !region.preserveBounds), lines, visual.messages, image, sample);
+    return regions;
   }
 
   function stabilizeSpeakerIds(regions, previous) {

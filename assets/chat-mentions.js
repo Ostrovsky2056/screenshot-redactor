@@ -57,8 +57,12 @@
     return [...values];
   }
 
+  function aliasPattern(value, flags) {
+    return new RegExp(value.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), flags);
+  }
+
   function aliasesFor(lines, areas) {
-    return participantLabels(lines, areas).map(value => new RegExp(value.replace(/[.*+?^$(){}|[\]\\]/g, "\\$&"), "giu"));
+    return participantLabels(lines, areas).map(value => aliasPattern(value, "giu"));
   }
 
   function leadingAddress(text, participants) {
@@ -153,7 +157,7 @@
     return selected;
   }
 
-  function inkBand(box, canvas, padding, minX = 0, maxX = canvas.width) {
+  function inkBand(box, canvas, padding, { minX = 0, maxX = canvas.width, adjacentBackground = false } = {}) {
     const x = Math.max(0, minX, Math.floor(box.x0) - padding);
     const y = Math.max(0, Math.floor(box.y0) - 1);
     const width = Math.min(canvas.width, maxX, Math.ceil(box.x1) + padding) - x;
@@ -168,8 +172,16 @@
       counts[levels[i] >> 3]++;
     }
     const mode = counts.indexOf(Math.max(...counts));
-    if (counts[mode] < .55 * levels.length) return null;
-    const background = mode * 8 + 4;
+    let support = counts[mode];
+    let background = mode * 8 + 4;
+    if (adjacentBackground && support < .55 * levels.length) {
+      // Antialiasing and subtle gradients can put the bubble color in two adjacent bins.
+      const lower = counts[mode - 1] ?? 0, upper = counts[mode + 1] ?? 0;
+      const neighbor = Math.max(lower, upper);
+      support += neighbor;
+      background += (lower > upper ? -8 : 8) * neighbor / support;
+    }
+    if (support < .55 * levels.length) return null;
     const contrast = new Uint32Array(32);
     for (const level of levels) contrast[Math.abs(level - background) >> 3]++;
     // Ignore a few high-contrast outliers when estimating the text color.
@@ -196,7 +208,8 @@
     }
     const left = columns.findIndex(count => count > 0);
     const right = columns.findLastIndex(count => count > 0) + 1;
-    return { x, left, right, columns, y0: Math.max(y, y + top - 1), y1: Math.min(y + height, y + bottom + 1) };
+    return { x, y, width, height, levels, left, right, columns,
+      y0: Math.max(y, y + top - 1), y1: Math.min(y + height, y + bottom + 1) };
   }
 
   function hanGlyphs(line, run, canvas, minX, maxX) {
@@ -204,7 +217,7 @@
     if (characters.length < 4 || !han.test(characters[0][0]) ||
       characters.some(([value]) => !han.test(value) && !/^[,.!?:;，。！？：；、]$/u.test(value))) return null;
     const padding = Math.max(1, Math.ceil(.36 * (run.box.x1 - run.box.x0) / characters.length));
-    const band = inkBand(run.box, canvas, padding, minX, maxX);
+    const band = inkBand(run.box, canvas, padding, { minX, maxX });
     if (!band) return null;
     const { left, right, columns } = band;
     const advance = (right - left) / (characters.length - (han.test(characters.at(-1)[0]) ? 0 : .65));
@@ -240,18 +253,30 @@
 
   function ranges(line, start, end, aliases, inChat, minimum = 0) {
     const { text, offsets } = compact(line.text.slice(start, end));
-    return mentions(text, aliases, inChat).filter(match => match.priority >= minimum).map(match => ({
-      from: start + offsets[match.start].start,
-      to: start + offsets[match.end - 1].end,
-    }));
+    return mentions(text, aliases, inChat).filter(match => match.priority >= minimum).flatMap(match => {
+      const from = start + offsets[match.start].start;
+      const to = start + offsets[match.end - 1].end;
+      if (match.priority === 95) {
+        const prefix = line.text.slice(start, from).match(/@\s*$/u);
+        const sign = prefix && exactBoxForRange(line, start + prefix.index, start + prefix.index + 1);
+        const name = exactBoxForRange(line, from, to);
+        if (sign && name) {
+          const size = name.y1 - name.y0;
+          // OCR can read a nearby control icon as an at sign.
+          if (name.x0 - sign.x1 > size * .65 && sign.y1 - sign.y0 > size * 1.18) return [];
+        }
+      }
+      return [{ from, to }];
+    });
   }
 
-  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames, groupTitle }, aliases, canvas) {
+  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames, groupTitle, sidebar }, aliases, canvas) {
     const quoteStarts = new Map(quoteBodies.map(({ line, start }) => [line, start]));
     const found = [];
     for (const line of lines) {
       const quoted = quoteStarts.has(line);
       for (const run of runs(line, avatars)) {
+        if (sidebar && inside(sidebar, run.box)) continue;
         if (groupTitle && (inside(run.box, groupTitle) || inside(groupTitle, run.box))) continue;
         const start = Math.max(run.start, quoteStarts.get(line) ?? 0);
         if (start >= run.end) continue;
@@ -367,17 +392,174 @@
     return box;
   }
 
+  const personalName = "\\p{Lu}[\\p{Ll}\\p{M}]+(?:['’\\-]\\p{Lu}?[\\p{Ll}\\p{M}]+)?";
+  const addressName = personalName + "(?:\\s+" + personalName + "){0,2}";
+  const trailingAddress = new RegExp(",\\s*(" + addressName + ")(?=\\s*[.!?]?\\s*$|\\s*,\\s*(?:you\\b|(?:can|could|would|will) you\\b|please\\b))", "u");
+  const greetingAddress = new RegExp("^(?:[Hh]ey|[Hh]i|[Hh]ello|[Tt]hanks|[Tt]hank you)[,\\s]+(" + addressName + ")(?=\\s*[,!.?]|$)", "u");
+  const ordinaryAddress = /^(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|everyone|anyone|team|thanks|please|there|again|okay)$/iu;
+
+  function addressInLine(line) {
+    const text = line.text.trimEnd();
+    const match = trailingAddress.exec(text) || greetingAddress.exec(text);
+    if (!match || ordinaryAddress.test(match[1]) || match[1].length > 40) return null;
+    const from = match.index + match[0].lastIndexOf(match[1]);
+    return { from, to: from + match[1].length };
+  }
+
+  function strokeWeight(band, box) {
+    const { x, y, width, height, levels } = band;
+    let pixels = 0;
+    let centers = 0;
+    for (let row = Math.max(1, Math.floor(box.y0 - y)); row < Math.min(height - 1, Math.ceil(box.y1 - y)); row++) {
+      for (let col = Math.max(1, Math.floor(box.x0 - x)); col < Math.min(width - 1, Math.ceil(box.x1 - x)); col++) {
+        const i = row * width + col;
+        if (!levels[i]) continue;
+        pixels++;
+        if (levels[i - 1] && levels[i + 1] && levels[i - width] && levels[i + width]) centers++;
+      }
+    }
+    return { pixels, centers };
+  }
+
+  function isEmphasizedName(line, { from, to }, box, band) {
+    const weight = strokeWeight(band, box);
+    if (weight.pixels < 24 || weight.centers < .11 * weight.pixels) return false;
+    let pixels = 0;
+    let centers = 0;
+    for (const word of line.text.matchAll(/[\p{Script=Latin}\p{M}]{2,}(?:['’][\p{Script=Latin}]+)?/gu)) {
+      const start = word.index;
+      const end = start + word[0].length;
+      if (start < to && end > from) continue;
+      const bounds = exactBoxForRange(line, start, end);
+      if (!bounds || Math.abs(bounds.y1 + bounds.y0 - box.y1 - box.y0) > box.y1 - box.y0) continue;
+      const reference = strokeWeight(band, bounds);
+      pixels += reference.pixels;
+      centers += reference.centers;
+    }
+    if (pixels < 32) return false;
+    const usual = centers / pixels;
+    const highlighted = weight.centers / weight.pixels;
+    return highlighted >= usual + .045 && highlighted >= 1.25 * usual;
+  }
+
+  function endBeforePunctuation(line, to, box, band) {
+    const next = line.spans.find(span => span.start >= to && span.box);
+    if (!next || !/^[,.。!?！？、]$/u.test(line.text.slice(next.start, next.end))) return box.x1;
+    const { levels, width, height, x } = band;
+    const size = box.y1 - box.y0;
+    const end = Math.min(width, Math.ceil(next.box.x1 + 1 - x), Math.ceil(box.x1 + size - x));
+    // A punctuation box supplied by OCR can contain the end of the previous letter.
+    let group = null;
+    for (let col = Math.max(0, Math.floor(box.x1 - .22 * size - x)); col <= end; col++) {
+      let y0 = height, y1 = 0;
+      if (col < end) {
+        for (let row = 0; row < height; row++) {
+          if (!levels[row * width + col]) continue;
+          y0 = Math.min(y0, row);
+          y1 = Math.max(y1, row + 1);
+        }
+      }
+      if (y1 > y0) {
+        if (!group) group = { x: col, y0, y1 };
+        group.y0 = Math.min(group.y0, y0);
+        group.y1 = Math.max(group.y1, y1);
+      } else if (group) {
+        if (group.x + x >= box.x1 - .17 * size && group.y1 - group.y0 <= .47 * size &&
+            group.y0 + band.y >= box.y0 + .31 * size) return group.x + x - 1;
+        group = null;
+      }
+    }
+    return box.x1;
+  }
+
+  function tightNameBox(line, { from, to }, canvas, body, emphasized = false) {
+    const box = exactBoxForRange(line, from, to);
+    if (!box || !inside(body, box)) return null;
+    const band = canvas && inkBand(line.box, canvas, 2, {
+      minX: Math.ceil(body.x0), maxX: Math.floor(body.x1), adjacentBackground: true,
+    });
+    if (emphasized && (!band || !isEmphasizedName(line, { from, to }, box, band))) return null;
+    if (!band) return box;
+    const x1 = endBeforePunctuation(line, to, box, band);
+    const previous = line.spans.findLast(span => span.end <= from && span.box);
+    const left = previous ? Math.min(box.x0, previous.box.x1) : body.x0;
+    const x0 = Math.max(body.x0, left, box.x0 - 1);
+    return x1 > x0 ? { x0, x1: Math.min(body.x1, x1), y0: Math.max(body.y0, box.y0 - 1),
+      y1: Math.min(body.y1, box.y1 + 1) } : null;
+  }
+
+  function addressReads(lines, layout) {
+    if (!layout.groupTitle || !layout.addressBodies?.length) return [];
+    return lines.flatMap(line => {
+      const match = line.confidence >= 54 && addressInLine(line);
+      const body = match && layout.addressBodies.find(bubble => inside(bubble, line.box) &&
+        line.box.x0 >= bubble.x0 - 2 && line.box.x1 <= bubble.x1 + 2);
+      return body ? [{ line, match, body }] : [];
+    });
+  }
+
+  function knownNamesInBody(line, aliases, canvas, body) {
+    const boxes = [];
+    for (const alias of aliases) {
+      for (const match of line.text.matchAll(alias)) {
+        const from = match.index, to = from + match[0].length;
+        if (!hasWordBoundaries(line.text, from, to)) continue;
+        const before = line.text.slice(0, from), after = line.text.slice(to);
+        const address = /(?:@\s*|[,，]\s*|\b(?:ask(?:ed)?|tell|told|thank(?:ed)?|invite[ds]?|remind(?:ed)?|with|to|for)\s+)$/iu.test(before) ||
+          /^\s*[,，]/u.test(after) && (!before.trim() ||
+            /^\s*[,，]\s*(?:you\b|please\b|(?:can|could|will|would) you\b)/iu.test(after));
+        if (!address && !/\p{L}\s+\p{L}/u.test(match[0])) continue;
+        const box = tightNameBox(line, { from, to }, canvas, body);
+        if (box && !boxes.some(seen => inside(seen, box))) boxes.push(box);
+      }
+    }
+    return boxes;
+  }
+
+  function repeatedAccounts(lines, header) {
+    if (header?.kind !== "inline" || header.count || !header.text) return [];
+    const title = header.text.normalize("NFKC").replace(/\s+/gu, "");
+    const parts = title.match(/^(\d{4,8})(\D(?:.{0,22}?\D)?)(\d{4,8})$/u);
+    if (!parts) return [];
+    const [, first, middle, last] = parts;
+    const noisy = /[/\\|]/u.test(middle);
+    const tails = [last];
+    if (noisy && last.length > 4) {
+      for (let skip = 1; skip <= Math.min(2, last.length - 4); skip++) tails.push(last.slice(skip));
+    }
+    const pattern = new RegExp("(?<!\\d)" + first + "\\s*([\\p{L}\\p{M}_·.\\-]+(?:\\s+[\\p{L}\\p{M}_·.\\-]+){0,7})\\s*(?:" +
+      tails.join("|") + ")(?!\\d)", "giu");
+    const boxes = [];
+    for (const line of lines) {
+      if (line.box.y0 < header.bodyTop || line.box.x0 < header.pane.x0 || line.box.x1 > header.pane.x1) continue;
+      for (const match of line.text.matchAll(pattern)) {
+        const body = match[1].replace(/\s+/gu, "");
+        if (body.length > 16 || !/\p{L}/u.test(body) ||
+            (noisy ? Math.abs(body.length - middle.length) > 4 : body.toLowerCase() !== middle.toLowerCase())) continue;
+        const box = exactBoxForRange(line, match.index, match.index + match[0].length);
+        if (box) boxes.push(box);
+      }
+    }
+    return boxes;
+  }
+
   function findRegions(lines, layout, canvas) {
     const aliases = aliasesFor(lines, layout.participantNames);
-    return readingRuns(lines, layout, aliases, canvas).flatMap(({ names }) => names.map(({ box }) => box));
+    const names = readingRuns(lines, layout, aliases, canvas).flatMap(({ names }) => names.map(({ box }) => box));
+    return [...names, ...repeatedAccounts(lines, layout.header)];
   }
 
   async function refineRegions(lines, layout, canvas, readCrops) {
     const aliases = aliasesFor(lines, layout.participantNames);
     const entries = readingRuns(lines, layout, aliases, canvas);
-    const boxes = entries.filter(entry => entry.retry).map(({ run }) => run.box);
+    const retries = entries.filter(entry => entry.retry);
+    const wholeLines = new Map(retries.filter(({ line, run }) => !run.start && run.end === line.text.length)
+      .map(({ line, run }) => [line, run.box]));
+    const direct = addressReads(lines, layout).map(entry => ({ ...entry, crop: wholeLines.get(entry.line) || entry.line.box }));
+    const known = layout.knownNameCrops || [];
+    const boxes = [...new Set([...retries.map(({ run }) => run.box), ...direct.map(({ crop }) => crop), ...known])];
     const crops = boxes.length ? await readCrops(boxes) : new Map();
-    return entries.flatMap(entry => {
+    const names = entries.flatMap(entry => {
       const { run, line, names, start } = entry;
       const reading = crops.get(run.box);
       const local = reading?.confidence >= 55 ? reading.line : null;
@@ -404,6 +586,31 @@
       }
       return resolved;
     });
+    const add = (box, options) => {
+      if (!box) return;
+      const index = names.findIndex(name => inside(name.box, box) && inside(box, name.box));
+      const resolved = { box, pending: false, ...options };
+      if (index < 0) names.push(resolved);
+      else if (names[index].pending) names[index] = resolved;
+    };
+    const exactBounds = { preserveBounds: true };
+    for (const { line, match, body, crop } of direct) {
+      const reading = crops.get(crop);
+      const local = reading?.confidence >= 56 && reading.line;
+      const focused = local && addressInLine(local);
+      if (focused && comparable(local.text.slice(focused.from, focused.to)) === comparable(line.text.slice(match.from, match.to))) {
+        add(tightNameBox(local, focused, canvas, body, true), exactBounds);
+      }
+    }
+    const aliasesFromCaptions = (layout.captionLabels || []).map(name => aliasPattern(name, "gu"));
+    for (const crop of known) {
+      const reading = crops.get(crop);
+      if (reading?.line && reading.confidence >= 64) {
+        for (const box of knownNamesInBody(reading.line, aliasesFromCaptions, canvas, crop)) add(box, exactBounds);
+      }
+    }
+    for (const box of repeatedAccounts(lines, layout.header)) add(box);
+    return names;
   }
 
   function croppedRegions(lines, layout, canvas, readings) {

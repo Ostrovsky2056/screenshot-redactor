@@ -1,13 +1,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { findRegions, matchQuoteSpeakers, titleBounds } = require("../assets/chat-layout.js");
+const { findRegions, matchQuoteSpeakers, titleBounds, additionalPortraits, messageSenderLayout, captionNames } = require("../assets/chat-layout.js");
 const mentions = require("../assets/chat-mentions.js");
 const { boxForRange } = require("../assets/sensitive-text.js");
 const model = require("../assets/chat-layout-model.js");
 
-function frame(dark = false) {
-  const width = 840;
-  const height = 440;
+function frame(dark = false, width = 840, height = 440) {
   const data = new Uint8ClampedArray(width * height * 4);
   const background = dark ? [25, 28, 34] : [247, 247, 247];
   const ink = dark ? [224, 224, 224] : [125, 130, 135];
@@ -469,4 +467,73 @@ test("finds the title above a chat divider when sparse OCR missed the name and m
   assert(covers([titleCrop], title));
   assert(titleCrop.x1 < control.x0);
   assert(titleCrop.y1 < 56);
+});
+
+test("locates a conversation title beside an avatar and keeps its controls outside the crop", () => {
+  const pic = frame(false, 360, 720);
+  pic.avatar(34, 41, [228, 172, 76]);
+  pic.fill(14, 53, 7, 16, [22, 24, 26]);
+  pic.fill(321, 56, 15, 12, [22, 24, 26]);
+  const title = pic.label("Mira", 91, 48, true, 9);
+  const status = pic.label("4 online", 91, 69, true, 8);
+  for (const line of pic.lines) line.confidence = 89;
+  const result = findRegions(pic, pic.lines, model);
+  assert.equal(result.header.kind, "inline");
+  assert(covers([result.header.title], title));
+  assert(covers([result.header.count], status));
+  assert(result.header.title.x0 > 82 && result.header.title.x1 < 321);
+  assert(covers(additionalPortraits(pic, pic.lines, result.header, []).avatars, { x0: 34, x1: 82, y0: 41, y1: 89 }));
+  pic.lines.pop();
+  assert.equal(findRegions(pic, pic.lines, model).header, null);
+});
+
+test("finds a centered title and its small chat portraits on a device mockup", () => {
+  const pic = frame(false, 360, 720);
+  pic.fill(124, 24, 110, 26, [19, 20, 24], 12);
+  pic.avatar(155, 61, [114, 189, 201]);
+  pic.fill(28, 80, 12, 13, [22, 24, 26]);
+  pic.fill(317, 80, 15, 14, [22, 24, 26]);
+  const title = pic.label("Art Room", 145, 115, true, 9);
+  pic.lines[0].confidence = 91;
+  pic.avatar(15, 198, [209, 113, 156]);
+  pic.avatar(15, 355, [209, 113, 156]);
+  pic.fill(151, 252, 105, 100, [238, 139, 135], 9);
+  const result = findRegions(pic, pic.lines, model);
+  assert.equal(result.header.kind, "centered");
+  assert(covers([result.header.title], title));
+  const portraits = additionalPortraits(pic, pic.lines, result.header, []).avatars;
+  assert.equal(portraits.length, 3);
+  assert(covers(portraits, {x0: 15, x1: 63, y0: 355, y1: 403}));
+});
+
+test("covers a sender's full name above a bottom-aligned avatar and a short message", () => {
+  const pic = frame(false, 360, 720);
+  const portrait = { x0: 14, y0: 306, x1: 54, y1: 346 };
+  pic.fill(14, 306, 40, 40, [210, 115, 145], 18);
+  const name = pic.label("Mira Santos", 79, 278, false, 8);
+  pic.fill(65, 299, 71, 48, [224, 224, 224], 8);
+  const message = pic.label("OK", 80, 311, false, 10);
+  const header = { kind: "centered", bodyTop: 169, pane: { x0: 0, x1: pic.width }, tone: [247, 247, 247] };
+  const { names: labels, bodies } = messageSenderLayout(pic, [], header, [portrait], [], []);
+  assert.equal(labels.length, 1);
+  assert(covers(labels, name));
+  assert(!covers(labels, message));
+  assert(covers(bodies, message));
+  assert(!covers(bodies, name));
+});
+
+test("reads only names from reply captions and receipts", () => {
+  const pic = frame();
+  const text = ["Ana replied to you", "You replied to Jacqueline", "Seen by Ana, Alex Walker +3"];
+  const readings = new Map();
+  for (const [i, value] of text.entries()) {
+    const box = pic.label(value, 20, 30 + 25 * i);
+    readings.set({ ...box, kind: i === 2 ? "receipt" : "reply" }, { line: pic.lines.at(-1), confidence: 89 });
+  }
+  const names = captionNames(readings);
+  assert.deepEqual(names.map(({ text }) => text), ["Ana", "Jacqueline", "Ana", "Alex Walker"]);
+  assert.deepEqual(names.map(({ box }) => box), [
+    boxForRange(pic.lines[0], 0, 3), boxForRange(pic.lines[1], 15, text[1].length),
+    boxForRange(pic.lines[2], 8, 11), boxForRange(pic.lines[2], 13, 24),
+  ]);
 });
