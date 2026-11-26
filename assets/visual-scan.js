@@ -228,14 +228,19 @@
   }
 
   async function findRegions(canvas, lines, detector, current) {
-    const avatars = [];
-    const associatedNames = [];
-    const candidateNames = lines.flatMap(nameCandidates).slice(0, 180);
     let pixels;
     const readPixels = () => {
       pixels ||= canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
       return pixels;
     };
+    const chat = typeof ChatLayout !== "undefined" && typeof ChatLayoutModel !== "undefined"
+      ? ChatLayout.findRegions(readPixels(), lines, ChatLayoutModel)
+      : { avatars: [], associatedNames: [], messages: [] };
+    const avatars = chat.avatars;
+    const associatedNames = chat.associatedNames;
+    const candidateNames = lines.flatMap(nameCandidates)
+      .filter(box => !chat.messages.some(message => overlap(box, message) > .55))
+      .slice(0, 180);
     if (candidateNames.length) {
       for (const box of candidateNames) {
         const avatar = adjacentAvatar(readPixels(), box);
