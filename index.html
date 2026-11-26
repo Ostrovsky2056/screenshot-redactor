@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
-  <meta name="description" content="Automatically find avatars and private text in screenshots. Review the boxes and export a redacted PNG on your device." data-zh-cn-content="在浏览器本地识别截图里的头像和敏感文字，核对框选后导出脱敏 PNG。">
+  <meta name="description" content="Redact screenshots in your browser without uploading them. Automatically select avatars and sensitive text, review the boxes, and export a PNG." data-zh-cn-content="截图无需上传，在浏览器本地自动框选头像和敏感文字，核对后即可导出脱敏 PNG。">
   <meta name="theme-color" content="#f4f1e9">
   <title data-zh-cn="截图脱敏 · AI 创作实验室">Screenshot Redactor · AI Creation Lab</title>
   <link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
   <link rel="stylesheet" href="assets/site.css?v=3">
-  <script src="assets/i18n.js" defer></script>
+  <script src="assets/i18n.js?v=2" defer></script>
   <script src="assets/ocr/tesseract.min.js" defer></script>
   <script src="assets/sensitive-text.js?v=3" defer></script>
   <script src="assets/chat-layout-model.js" defer></script>
@@ -28,7 +28,10 @@
         <span data-zh-cn="AI 创作实验室">AI Creation Lab</span>
       </a>
       <nav class="header-links" aria-label="Site links" data-zh-cn-aria-label="站点链接">
-        <a href="https://github.com/Ostrovsky2056/screenshot-redactor" data-zh-cn="源码">Source</a>
+        <a href="https://github.com/Ostrovsky2056/screenshot-redactor"
+          aria-label="Project source and README on GitHub"
+          data-zh-cn-aria-label="在 GitHub 查看项目源码与说明"
+          data-zh-cn-href="https://github.com/Ostrovsky2056/screenshot-redactor/blob/main/README.zh-CN.md">GitHub</a>
         <details class="language-menu" data-language-menu hidden>
           <summary class="language-trigger">
             <span class="visually-hidden" data-zh-cn="站点语言">Site language</span>
@@ -48,14 +51,14 @@
     <section class="intro" aria-labelledby="page-title">
       <div>
         <h1 id="page-title">
-          <span data-zh-cn="截图">Screenshot</span>
-          <span class="title-block" data-zh-cn="脱敏">Redactor</span>
+          <span lang="en" data-zh-cn="截图">Screenshot</span>
+          <span class="title-block" lang="en" data-zh-cn="脱敏">Redactor</span>
         </h1>
-        <p data-zh-cn="自动框选头像和敏感文字，核对后导出 PNG。">Find avatars and sensitive text, review the boxes, then export a PNG.</p>
+        <p lang="en" data-zh-cn="打开截图，自动框选头像和敏感文字。核对后即可导出 PNG。">Open a screenshot to automatically select avatars and sensitive text. Review the boxes and export a PNG.</p>
       </div>
       <div class="privacy">
-        <strong data-zh-cn="本地识别">On-device analysis</strong>
-        <p data-zh-cn="识别和导出都在当前浏览器完成。">Recognition and export stay in this browser.</p>
+        <strong data-zh-cn="全程本地，无需上传">On-device processing. No uploads.</strong>
+        <p data-zh-cn="截图和识别出的文字始终留在你的设备上。">Your screenshots and recognized text stay on your device.</p>
       </div>
     </section>
 

@@ -12,13 +12,14 @@
     ["data-zh-cn-aria-label", "aria-label"],
     ["data-zh-cn-content", "content"],
     ["data-zh-cn-alt", "alt"],
+    ["data-zh-cn-href", "href"],
   ]) {
     for (const element of document.querySelectorAll(`[${source}]`)) {
       translations.push({
         element,
         target,
         english: target ? element.getAttribute(target) : element.textContent,
-        chinese: element.getAttribute(source),
+        chinese: element.getAttribute(source)?.trim() || null,
       });
     }
   }
@@ -42,11 +43,14 @@
     document.documentElement.lang = language;
 
     for (const { element, target, english, chinese } of translations) {
-      const value = language === "zh-CN" ? chinese : english;
+      const translated = language === "zh-CN" ? chinese : null;
+      const value = translated ?? english;
       if (target) {
-        element.setAttribute(target, value);
+        if (value === null) element.removeAttribute(target);
+        else element.setAttribute(target, value);
       } else {
         element.textContent = value;
+        element.lang = translated ? language : "en";
       }
     }
 
