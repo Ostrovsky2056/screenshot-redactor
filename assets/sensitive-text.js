@@ -131,7 +131,7 @@
     return [...lines.filter(line => !replaced.has(line)), ...recovered];
   }
 
-  function runs(line, excludedAreas = [], { skipSeparators = false } = {}) {
+  function runs(line, excludedAreas = [], { skipSeparators = false, splitGaps = true } = {}) {
     const groups = [];
     let group;
     let afterExcluded = false;
@@ -153,7 +153,7 @@
       if (skipSeparators && afterExcluded && /^[,，:：]$/u.test(line.text.slice(span.start, span.end))) continue;
       afterExcluded = false;
       const previous = group?.at(-1)?.box;
-      if (previous) {
+      if (previous && splitGaps) {
         const height = Math.max(previous.y1 - previous.y0, span.box.y1 - span.box.y0);
         const verticalOverlap = Math.min(previous.y1, span.box.y1) - Math.max(previous.y0, span.box.y0);
         const gap = span.box.x0 - previous.x1;
@@ -215,17 +215,44 @@
     return right > x && bottom > y ? { type, x, y, width: right - x, height: bottom - y } : null;
   }
 
-  function findRegions(lines, original, scan) {
+  function findRegions(lines, original, scan, excluded = []) {
     const regions = [];
-    for (const { text, spans } of lines) {
-      for (const { type, start, end } of matches(text)) {
-        const boxes = spans.filter(span => span.start < end && span.end > start && span.box).map(span => span.box);
-        if (!boxes.length) continue;
-        const region = scaleBox(bounds(boxes), type, original, scan);
-        if (region) regions.push(region);
+    for (const line of lines) {
+      const excerpts = excluded.some(box => coverage(line.box, box) > 0)
+        ? runs(line, excluded, { splitGaps: false }) : [{ start: 0, end: line.text.length }];
+      for (const { start, end } of excerpts) {
+        for (const match of matches(line.text.slice(start, end))) {
+          const box = boxForRange(line, start + match.start, start + match.end, { wholeWords: true });
+          const region = box && scaleBox(box, match.type, original, scan);
+          if (region) regions.push(region);
+        }
       }
     }
     return regions;
+  }
+
+  function avoidStickers(regions, stickers, original, scan) {
+    if (!stickers.length) return regions;
+    const areas = stickers.map(box => scaleBox(box, "graphic", original, scan, 0)).filter(Boolean);
+    return regions.flatMap(region => {
+      if (region.enabled === false && !region.pending) return [region];
+      let pieces = [region];
+      for (const area of areas) {
+        pieces = pieces.flatMap(piece => {
+          const right = piece.x + piece.width, bottom = piece.y + piece.height;
+          const x0 = Math.max(piece.x, area.x), x1 = Math.min(right, area.x + area.width);
+          const y0 = Math.max(piece.y, area.y), y1 = Math.min(bottom, area.y + area.height);
+          if (x0 >= x1 || y0 >= y1) return [piece];
+          return [
+            { ...piece, height: y0 - piece.y },
+            { ...piece, y: y1, height: bottom - y1 },
+            { ...piece, y: y0, height: y1 - y0, width: x0 - piece.x },
+            { ...piece, x: x1, y: y0, height: y1 - y0, width: right - x1 },
+          ].filter(box => box.width > 0 && box.height > 0);
+        });
+      }
+      return pieces;
+    });
   }
 
   function alignMaskHeights(regions, lines, messages, original, scan) {
@@ -267,7 +294,7 @@
     return regions;
   }
 
-  const scanner = { readLines, mergeMessageLines, findRegions, scaleBox, alignMaskHeights, runs, boxForRange, exactBoxForRange };
+  const scanner = { readLines, mergeMessageLines, findRegions, scaleBox, alignMaskHeights, avoidStickers, runs, boxForRange, exactBoxForRange };
   if (typeof module !== "undefined") module.exports = scanner;
   else window.SensitiveText = scanner;
 })();

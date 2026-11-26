@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { alignMaskHeights, boxForRange, findRegions, mergeMessageLines, runs } = require("../assets/sensitive-text.js");
+const { alignMaskHeights, avoidStickers, boxForRange, findRegions, mergeMessageLines, runs } = require("../assets/sensitive-text.js");
 
 function ocrLine(text, x, y, confidence = 80) {
   const spans = [...text.matchAll(/\S/gu)].map(({ index, 0: value }) => ({
@@ -93,5 +93,43 @@ test("fits text mask padding between adjacent rows and inside message bubbles", 
 
   assert.deepEqual(regions.map(({ y, height }) => [y, height]), [
     [10, 24], [34, 18], [78, 24], [35, 18], [0, 24], [72, 24],
+  ]);
+});
+
+test("retains a sticker's email while masking the same email outside on a shared OCR row", () => {
+  const email = "badge@example.org";
+  const line = ocrLine(email + " " + email, 30, 34);
+  const sticker = { x0: 20, y0: 20, x1: 205, y1: 61 };
+  const image = { width: 540, height: 100 };
+  const other = boxForRange(line, email.length + 1, line.text.length);
+  assert.deepEqual(findRegions([line], image, image, [sticker]), [
+    { type: "email", x: other.x0 - 3, y: 31, width: other.x1 - other.x0 + 6, height: 20 },
+  ]);
+});
+
+test("clips automatic mask padding at a sticker without removing outside text or the optional graphic", () => {
+  const image = { width: 300, height: 200 };
+  const sticker = { x0: 50, y0: 40, x1: 150, y1: 120 };
+  const optional = { type: "graphic", x: 50, y: 40, width: 100, height: 80, enabled: false };
+  const near = { type: "email", x: 147, y: 80, width: 97, height: 30 };
+  const avatar = { type: "avatar", x: 10, y: 32, width: 36, height: 36 };
+  const candidate = { type: "name", x: 69, y: 84, width: 40, height: 12, enabled: false, pending: true };
+  assert.deepEqual(avoidStickers([near, avatar, candidate, optional], [sticker], image, image),
+    [{ ...near, x: 150, width: 94 }, avatar, optional]);
+});
+
+test("keeps a sensitive value linked to its external label across a gap beside a sticker", () => {
+  const line = {
+    text: "contact: Taylor",
+    box: { x0: 20, y0: 52, x1: 312, y1: 64 },
+    spans: [
+      { start: 0, end: 8, box: { x0: 20, y0: 52, x1: 75, y1: 64 } },
+      { start: 9, end: 15, box: { x0: 265, y0: 52, x1: 312, y1: 64 } },
+    ],
+  };
+  const sticker = { x0: 99, y0: 25, x1: 253, y1: 113 };
+  const image = { width: 440, height: 160 };
+  assert.deepEqual(findRegions([line], image, image, [sticker]), [
+    { type: "name", x: 262, y: 49, width: 53, height: 18 },
   ]);
 });

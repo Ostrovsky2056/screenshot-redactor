@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { findRegions, matchQuoteSpeakers, titleBounds, additionalPortraits, messageSenderLayout, captionNames } = require("../assets/chat-layout.js");
+const { findRegions, matchQuoteSpeakers, titleBounds, additionalPortraits, messageSenderLayout, captionNames, stickerRegions } = require("../assets/chat-layout.js");
 const mentions = require("../assets/chat-mentions.js");
 const { boxForRange } = require("../assets/sensitive-text.js");
 const model = require("../assets/chat-layout-model.js");
@@ -178,6 +178,7 @@ test("recognizes the nickname above a photo beside a repeated avatar", () => {
   assert.equal(result.speakerIds.get(repeated), 0);
   assert.equal(result.speakerIds.get(nickname), 0);
   assert(covers(result.graphics, photo));
+  assert(!covers(stickerRegions(pic, result, result.avatars), photo));
   assert(!covers(result.messages, photo));
 });
 
@@ -536,4 +537,57 @@ test("reads only names from reply captions and receipts", () => {
     boxForRange(pic.lines[0], 0, 3), boxForRange(pic.lines[1], 15, text[1].length),
     boxForRange(pic.lines[2], 8, 11), boxForRange(pic.lines[2], 13, 24),
   ]);
+});
+
+test("finds independent sticker artwork inside the portrait lane", () => {
+  const pic = frame();
+  const portrait = [128, 178, 214];
+  pic.avatar(22, 30, portrait);
+  pic.fill(86, 33, 240, 52, [232, 232, 235], 10);
+  pic.label("Email", 104, 51);
+
+  pic.avatar(22, 148, portrait);
+  pic.fill(101, 156, 100, 100, [140, 84, 153], 48);
+  pic.fill(123, 170, 60, 62, [233, 140, 107], 28);
+  pic.fill(89, 222, 130, 37, [222, 176, 88], 13);
+  const printed = pic.label("badge@art.test", 95, 235, true, 8);
+
+  const result = findRegions(pic, pic.lines, model);
+  const stickers = stickerRegions(pic, result, result.avatars);
+  assert.equal(stickers.length, 1);
+  assert(covers(stickers, printed));
+  assert(covers(stickers, { x0: 101, x1: 201, y0: 156, y1: 256 }));
+  assert(result.avatars.every(avatar => !covers(stickers, avatar)));
+});
+
+test("finds a painted rectangular sticker beside a bottom-aligned portrait", () => {
+  const pic = frame(true);
+  const portrait = { x0: 22, y0: 215, x1: 70, y1: 263 };
+  pic.avatar(22, 215, [128, 178, 214]);
+  pic.fill(89, 118, 142, 144, [40, 78, 91], 8);
+  pic.fill(115, 139, 90, 82, [145, 190, 210], 35);
+  pic.fill(105, 217, 112, 30, [201, 106, 99], 9);
+  pic.label("SEND", 124, 225);
+  const result = findRegions(pic, pic.lines, model);
+  assert(covers(stickerRegions(pic, result, [portrait]), { x0: 89, y0: 118, x1: 231, y1: 262 }));
+});
+
+test("keeps a rounded photograph eligible for redaction", () => {
+  const pic = frame(false, 420, 360);
+  const portrait = { x0: 22, y0: 111, x1: 70, y1: 159 };
+  pic.avatar(22, 111, [128, 178, 214]);
+  pic.fill(89, 115, 142, 134, [110, 130, 160], 51);
+  for (let y = 115; y < 249; y++) {
+    for (let x = 89; x < 231; x++) {
+      const i = (y * pic.width + x) * 4;
+      if (pic.data[i] === 247) continue;
+      const color = (Math.floor(x / 12) + 11 * Math.floor(y / 9)) % 64;
+      pic.data[i] = 60 + 32 * (color % 4);
+      pic.data[i + 1] = 73 + 32 * Math.floor(color / 4) % 128;
+      pic.data[i + 2] = 67 + 32 * Math.floor(color / 16);
+    }
+  }
+  const result = findRegions(pic, pic.lines, model);
+  assert(covers(result.artwork, { x0: 89, y0: 115, x1: 231, y1: 249 }));
+  assert.deepEqual(stickerRegions(pic, result, [portrait]), []);
 });

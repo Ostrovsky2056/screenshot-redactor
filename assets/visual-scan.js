@@ -348,25 +348,32 @@
       return sidebar && (box.x0 + box.x1) / 2 >= sidebar.x0 && (box.x0 + box.x1) / 2 <= sidebar.x1 &&
         (box.y0 + box.y1) / 2 >= sidebar.y0;
     };
-    const avatars = chat.avatars.filter(box => !inTitleBar(box) && !inSidebar(box));
+    const portraits = chat.avatars.filter(box => !inTitleBar(box) && !inSidebar(box));
     for (const box of supplemental?.avatars || []) {
-      if (!avatars.some(found => overlap(found, box) >= .70)) avatars.push(box);
+      if (!portraits.some(found => overlap(found, box) >= .70)) portraits.push(box);
     }
-    const associatedNames = chat.associatedNames.filter(box => !inTitleBar(box) && !inSidebar(box) && !supplemental?.artworkLabels.has(box));
-    associatedNames.push(...(supplemental?.names || []));
-    if (supplemental?.sidebar) chat.messages = chat.messages.filter(box => !inSidebar(box));
+    const stickers = chat.artwork ? ChatLayout.stickerRegions(readPixels(), chat, portraits) : [];
+    const inSticker = box => stickers.some(area => {
+      const x = (box.x0 + box.x1) / 2, y = (box.y0 + box.y1) / 2;
+      return x >= area.x0 && x < area.x1 && y >= area.y0 && y < area.y1 && overlap(area, box) >= .60;
+    });
+    const avatars = portraits.filter(box => !inSticker(box));
+    const associatedNames = chat.associatedNames.filter(box =>
+      !inTitleBar(box) && !inSidebar(box) && !inSticker(box) && !supplemental?.artworkLabels.has(box));
+    associatedNames.push(...(supplemental?.names || []).filter(box => !inSticker(box)));
+    chat.messages = chat.messages.filter(box => !inSidebar(box) && !inSticker(box));
     const quotedLines = new Set(chat.quoteBodies.map(({ line }) => line));
     const useNameFallback = !supplemental || !["centered", "numbered"].includes(header.kind);
     const candidateNames = (useNameFallback ? lines : []).filter(line => !quotedLines.has(line))
       .flatMap(line => nameCandidates(line, readPixels()))
-      .filter(box => !inSidebar(box) && !inTitleBar(box) &&
+      .filter(box => !inSidebar(box) && !inTitleBar(box) && !inSticker(box) &&
         !(chat.groupTitle && overlap(box, chat.groupTitle) > .55) &&
         !chat.messages.some(message => overlap(box, message) > .55))
       .slice(0, 180);
     if (candidateNames.length) {
       for (const box of candidateNames) {
         const avatar = adjacentAvatar(readPixels(), box);
-        if (!avatar || inTitleBar(avatar) || inSidebar(avatar) ||
+        if (!avatar || inTitleBar(avatar) || inSidebar(avatar) || inSticker(avatar) ||
             (supplemental && !avatars.some(found => overlap(found, avatar) > .55))) continue;
         if (!avatars.some(found => overlap(found, avatar) > .55)) avatars.push(avatar);
         if (!associatedNames.some(found => overlap(found, box) > .75)) associatedNames.push(box);
@@ -378,9 +385,9 @@
         const faces = await findFaces(canvas, detector, current);
         faces.sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0));
         for (const face of faces) {
-          if (inTitleBar(face) || avatars.some(box => overlap(box, face) > .55)) continue;
+          if (inTitleBar(face) || inSticker(face) || avatars.some(box => overlap(box, face) > .55)) continue;
           const avatar = enclosingAvatar(readPixels(), face);
-          if (inTitleBar(avatar)) continue;
+          if (inTitleBar(avatar) || inSticker(avatar)) continue;
           if (chat.profiles.length >= 2 && chatSticker(readPixels(), avatar, avatars)) {
             chat.graphics.push(avatar);
             continue;
@@ -404,27 +411,27 @@
     let addressBodies = [];
     if (supplemental) {
       const senderLayout = ChatLayout.messageSenderLayout(readPixels(), lines, header, avatars, chat.profiles, associatedNames);
-      if (header.kind === "centered") addressBodies = senderLayout.bodies;
+      if (header.kind === "centered") addressBodies = senderLayout.bodies.filter(box => !inSticker(box));
       for (const name of senderLayout.names) {
-        if (!associatedNames.some(box => overlap(box, name) >= .74 && box.x0 <= name.x0 && box.x1 >= name.x1)) {
+        if (!inSticker(name) && !associatedNames.some(box => overlap(box, name) >= .74 && box.x0 <= name.x0 && box.x1 >= name.x1)) {
           associatedNames.push(name);
         }
       }
     }
     let captionNames = [];
     if (supplemental && readTitle) {
-      const crops = ChatLayout.messageCaptionCrops(readPixels(), header);
+      const crops = ChatLayout.messageCaptionCrops(readPixels(), header).filter(crop => !inSticker(crop));
       if (crops.length) {
         const readings = await readTitle(crops).catch(() => new Map());
         captionNames = ChatLayout.captionNames(readings);
       }
     }
-    const knownNameCrops = captionNames.flatMap(({ bubble }) => bubble ? [bubble] : []);
+    const knownNameCrops = captionNames.flatMap(({ bubble }) => bubble && !inSticker(bubble) ? [bubble] : []);
     if (captionNames.length && header?.kind === "inline") {
       const size = header.portrait.y1 - header.portrait.y0;
       for (const crop of colorCrops) {
         const width = crop.x1 - crop.x0, height = crop.y1 - crop.y0;
-        if (!crop.outlined && width >= 2.3 * size && height >= .65 * size && height <= 1.7 * size &&
+        if (!crop.outlined && !inSticker(crop) && width >= 2.3 * size && height >= .65 * size && height <= 1.7 * size &&
             crop.x0 >= header.pane.x0 + .28 * (header.pane.x1 - header.pane.x0) &&
             crop.x1 >= header.pane.x1 - .42 * size && crop.y0 > header.bodyTop &&
             crop.y1 < .90 * canvas.height && !knownNameCrops.some(box => overlap(box, crop) > .72)) {
@@ -432,10 +439,11 @@
         }
       }
     }
-    return { ...chat, avatars, sidebar: supplemental?.sidebar,
+    return { ...chat, avatars, stickers, sidebar: supplemental?.sidebar,
       associatedNames: [...associatedNames, ...captionNames.map(({ box }) => box)], participantNames: associatedNames,
       addressBodies, knownNameCrops: knownNameCrops.slice(0, 18),
-      captionLabels: [...new Set(captionNames.map(({ text }) => text))], faceScanIncomplete, colorCrops };
+      captionLabels: [...new Set(captionNames.map(({ text }) => text))], faceScanIncomplete,
+      colorCrops: colorCrops.filter(box => !inSticker(box)) };
   }
 
   const vision = { loadModel, findRegions };

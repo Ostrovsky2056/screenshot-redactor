@@ -270,12 +270,13 @@
     });
   }
 
-  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames, groupTitle, sidebar }, aliases, canvas) {
+  function readingRuns(lines, { avatars, messages, quoteBodies, participantNames, groupTitle, sidebar, stickers = [] }, aliases, canvas) {
     const quoteStarts = new Map(quoteBodies.map(({ line, start }) => [line, start]));
+    const excluded = [...avatars, ...stickers];
     const found = [];
     for (const line of lines) {
       const quoted = quoteStarts.has(line);
-      for (const run of runs(line, avatars)) {
+      for (const run of runs(line, excluded)) {
         if (sidebar && inside(sidebar, run.box)) continue;
         if (groupTitle && (inside(run.box, groupTitle) || inside(groupTitle, run.box))) continue;
         const start = Math.max(run.start, quoteStarts.get(line) ?? 0);

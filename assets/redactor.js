@@ -959,7 +959,8 @@
   }
 
   function detections(lines, visual, inlineNames, image, sample) {
-    const regions = SensitiveText.findRegions(lines, image, sample);
+    const stickers = visual.stickers;
+    const regions = SensitiveText.findRegions(lines, image, sample, stickers);
     function add(box, type, margin, {
       enabled = true, pending = false, avatarNickname = false, quoteSender = false, preserveBounds = false,
     } = {}) {
@@ -1004,7 +1005,7 @@
     }
     const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
     const nicknames = visual.profiles.map(profile => profile.name).filter(name => name?.line);
-    const knownRegions = [...visual.avatars, ...visual.associatedNames,
+    const knownRegions = [...visual.avatars, ...visual.associatedNames, ...stickers,
       ...inlineNames.filter(({ pending }) => !pending).map(({ box }) => box)];
     if (visual.groupTitle) knownRegions.push(visual.groupTitle);
     for (const line of lines) {
@@ -1017,9 +1018,9 @@
       }
     }
     for (const box of visual.messages) add(box, "bubble", 0, { enabled: false });
-    for (const box of visual.graphics) add(box, "graphic", 0, { enabled: false });
+    for (const box of [...stickers, ...visual.graphics]) add(box, "graphic", 0, { enabled: false });
     SensitiveText.alignMaskHeights(regions.filter(region => !region.preserveBounds), lines, visual.messages, image, sample);
-    return regions;
+    return SensitiveText.avoidStickers(regions, stickers, image, sample);
   }
 
   function stabilizeSpeakerIds(regions, previous) {

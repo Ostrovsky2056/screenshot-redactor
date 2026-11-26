@@ -330,6 +330,86 @@
     });
   }
 
+  function illustratedTile(pixels, box, color) {
+    const size = 24;
+    let border = 0;
+    let plainBorder = 0;
+    let drawnRows = 0;
+    for (let row = 0; row < size; row++) {
+      let run = 0;
+      let longest = 0;
+      for (let col = 0; col < size; col++) {
+        const x = box.x0 + (col + 1.5) * width(box) / (size + 2);
+        const y = box.y0 + (row + 1.5) * height(box) / (size + 2);
+        const delta = distance(pixels.data, pixelIndex(pixels, x, y), color);
+        if (row === 0 || row === size - 1 || col === 0 || col === size - 1) {
+          border++;
+          if (delta < 52) plainBorder++;
+        }
+        run = delta > 82 ? run + 1 : 0;
+        longest = Math.max(longest, run);
+      }
+      if (longest >= 5) drawnRows++;
+    }
+    return plainBorder >= .66 * border && drawnRows >= .20 * size;
+  }
+
+  function limitedPalette(pixels, box, tone) {
+    const size = 40;
+    const bins = new Uint16Array(512);
+    let foreground = 0;
+    for (let row = 0; row < size; row++) {
+      const y = box.y0 + (row + .5) * height(box) / size;
+      for (let col = 0; col < size; col++) {
+        const x = box.x0 + (col + .5) * width(box) / size;
+        const i = pixelIndex(pixels, x, y);
+        if (distance(pixels.data, i, tone) < 27) continue;
+        const { data } = pixels;
+        const key = ((data[i] >> 5) << 6) | ((data[i + 1] >> 5) << 3) | (data[i + 2] >> 5);
+        bins[key]++;
+        foreground++;
+      }
+    }
+    bins.sort();
+    const common = bins[511] + bins[510] + bins[509];
+    return foreground > 0 && common >= .43 * foreground;
+  }
+
+  function stickerRegions(pixels, { artwork, tone, header, groupTitle, messages }, avatars) {
+    if (!artwork?.length || !avatars.length) return [];
+    const pane = header?.pane || { x0: 0, x1: pixels.width };
+    const top = header?.bodyTop ?? groupTitle?.y1 ?? 0;
+    const center = (pane.x0 + pane.x1) / 2;
+    const anchors = avatars.filter(box => box !== header?.portrait && !box.clipped && box.y0 >= top - 2)
+      .map(box => ({ box, size: length(box), left: (box.x0 + box.x1) / 2 < center }))
+      .filter(({ box, size, left }) => {
+        const margin = left ? box.x0 - pane.x0 : pane.x1 - box.x1;
+        return size >= 10 && margin >= -2 && margin < Math.min(.22 * width(pane), 2.5 * size);
+      });
+    return artwork.filter(box => {
+      const w = width(box), h = height(box);
+      if (box.y0 < top || box.x0 < pane.x0 || box.x1 > pane.x1 || w > .61 * width(pane) ||
+          w < .54 * h || w > 1.72 * h) return false;
+      // An artwork message sits inward from its sender's portrait, even in bottom-aligned chats.
+      const anchor = anchors.find(({ box: avatar, size, left }) => {
+        const gap = left ? box.x0 - avatar.x1 : avatar.x0 - box.x1;
+        const drop = box.y0 - avatar.y0;
+        const aligned = (drop >= -.30 * size && drop <= 1.30 * size) ||
+          (drop <= .30 * size && Math.abs(box.y1 - avatar.y1) <= .44 * size);
+        return aligned && gap >= Math.max(3, .08 * size) && gap <= 1.35 * size &&
+          w >= .82 * size && h >= .82 * size && w <= 8 * size && h <= 8 * size;
+      });
+      if (!anchor || messages.some(message => width(message) * height(message) > 1.3 * w * h &&
+          overlap(box, message) >= .96)) return false;
+      const { flatness, color } = surface(pixels, box, tone);
+      // Rounded photos can share a cutout's silhouette. Require a concentrated palette for cutouts.
+      if (box.fill < .92 && !hasCardOutline(pixels, tone, box) && (flatness < .72 || box.fill < .55) &&
+          limitedPalette(pixels, box, tone)) return true;
+      return w >= 1.28 * anchor.size && h >= 1.28 * anchor.size && w >= .73 * h && w <= 1.37 * h &&
+        flatness >= .44 && flatness <= .87 && illustratedTile(pixels, box, color);
+    });
+  }
+
   function cardCandidates(pixels, tone, shapes, minimum) {
     // Thumbnails can be textured, and a card may have only a thin edge against the chat background.
     return shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
@@ -1219,8 +1299,9 @@
     const paired = new Set(media.map(({ avatar }) => avatar));
     const avatars = avatarSlots(profiles, recovered.filter(avatar => !paired.has(avatar)), pixels, speakerIds);
     const mediaCards = new Set(media.map(({ bubble }) => bubble));
-    const graphics = shapes.filter(box => mediaCards.has(box) || (width(box) >= minimum && height(box) >= minimum &&
-      box.fill >= .5 && box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height));
+    const artwork = shapes.filter(box => width(box) >= minimum && height(box) >= minimum &&
+      box.x0 > 0 && box.y0 > 0 && box.x1 < pixels.width && box.y1 < pixels.height);
+    const graphics = artwork.filter(box => mediaCards.has(box) || box.fill >= .5);
     const { senders, quoteBodies } = quotes(pixels, tone, shapes, lines, profiles);
     matchQuoteSpeakers(profiles, senders, speakerIds);
     return {
@@ -1235,6 +1316,8 @@
       messages: pairs.map(({ bubble }) => bubble),
       quoteBodies,
       graphics,
+      artwork,
+      tone,
       profiles,
       quoteSenders: senders,
       speakerIds,
@@ -1242,7 +1325,7 @@
   }
 
   const chat = { findRegions, pairInputs, matchQuoteSpeakers, titleBounds, additionalPortraits, memberStatus, messageSenderLayout,
-    messageCaptionCrops, captionNames };
+    messageCaptionCrops, captionNames, stickerRegions };
   if (typeof module !== "undefined") module.exports = chat;
   else window.ChatLayout = chat;
 })();
