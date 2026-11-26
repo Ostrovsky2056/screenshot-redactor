@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="Cover private details in a screenshot and export a PNG. Processing happens on your device." data-zh-cn-content="框选遮挡截图里的敏感信息并导出 PNG，图片在你的浏览器本地处理。">
+  <meta name="theme-color" content="#f4f1e9">
+  <title data-zh-cn="截图脱敏 · AI 创作实验室">Screenshot Redactor · AI Creation Lab</title>
+  <link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
+  <link rel="stylesheet" href="assets/site.css">
+  <script src="assets/i18n.js" defer></script>
+  <script src="assets/redactor.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-zh-cn="跳到工具">Skip to the tool</a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="https://ostrovsky2056.github.io/" aria-label="AI Creation Lab home" data-zh-cn-aria-label="AI 创作实验室首页">
+        <img src="assets/favicon.png" width="128" height="128" alt="">
+        <span data-zh-cn="AI 创作实验室">AI Creation Lab</span>
+      </a>
+      <nav class="header-links" aria-label="Site links" data-zh-cn-aria-label="站点链接">
+        <a href="https://github.com/Ostrovsky2056/screenshot-redactor" data-zh-cn="源码">Source</a>
+        <details class="language-menu" data-language-menu hidden>
+          <summary class="language-trigger">
+            <span class="visually-hidden" data-zh-cn="站点语言">Site language</span>
+            <span data-language-indicator lang="en">EN</span>
+          </summary>
+          <div class="language-options">
+            <button type="button" data-language-choice="auto" data-zh-cn="跟随浏览器" aria-pressed="true">Follow browser</button>
+            <button type="button" data-language-choice="en" lang="en" aria-pressed="false">English</button>
+            <button type="button" data-language-choice="zh-CN" lang="zh-CN" aria-pressed="false">简体中文</button>
+          </div>
+        </details>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell" id="main" tabindex="-1">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <h1 id="page-title">
+          <span data-zh-cn="截图">Screenshot</span>
+          <span class="title-block" data-zh-cn="脱敏">Redactor</span>
+        </h1>
+        <p data-zh-cn="用实色遮住敏感信息，再导出 PNG。">Cover private details with solid blocks and export a PNG.</p>
+      </div>
+      <div class="privacy">
+        <strong data-zh-cn="本地处理">On-device processing</strong>
+        <p data-zh-cn="图片只在当前浏览器里处理。">Your image stays in this browser.</p>
+      </div>
+    </section>
+
+    <section class="editor" aria-label="Screenshot editor" data-zh-cn-aria-label="截图编辑器">
+      <div class="toolbar" id="toolbar" hidden>
+        <button class="quiet" type="button" id="replace" data-zh-cn="更换截图">Replace image</button>
+        <div class="actions">
+          <button class="quiet" type="button" id="undo" disabled data-zh-cn="撤销">Undo</button>
+          <button class="quiet" type="button" id="clear" disabled data-zh-cn="清空遮挡">Clear masks</button>
+          <button class="primary" type="button" id="save" disabled data-zh-cn="导出 PNG">Export PNG</button>
+        </div>
+      </div>
+      <div class="workspace" id="workspace">
+        <div class="import-panel" id="import-panel">
+          <div class="import-mark" aria-hidden="true"></div>
+          <button class="primary" type="button" id="choose" disabled data-zh-cn="选择截图">Choose a screenshot</button>
+          <p data-zh-cn="也可以拖入文件，或直接粘贴截图。">You can also drop a file or paste a screenshot.</p>
+          <p class="formats">PNG · JPEG · WebP</p>
+          <noscript><p>Enable JavaScript to edit images in your browser. 请启用 JavaScript 以在浏览器中编辑图片。</p></noscript>
+        </div>
+        <canvas id="preview" class="preview" hidden role="img" aria-label="Screenshot preview. Drag to cover a region." data-zh-cn-aria-label="截图预览。拖动可遮挡区域。"></canvas>
+      </div>
+      <div class="editor-status" id="editor-status" hidden>
+        <p id="feedback" role="status" aria-atomic="true"></p>
+        <p class="dimensions" id="dimensions"></p>
+      </div>
+      <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp" hidden>
+    </section>
+  </main>
+</body>
+</html>
