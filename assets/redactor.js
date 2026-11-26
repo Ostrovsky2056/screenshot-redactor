@@ -18,6 +18,7 @@
       loading: "Opening the screenshot…",
       exampleLoading: "Opening the example…",
       exampleFailed: "Couldn’t open the example. Try again.",
+      handoffFailed: "Couldn’t open the screenshot from the homepage. Choose it again here.",
       ready: "Drag on the image to cover a region.",
       masks: count => count + (count === 1 ? " region covered" : " regions covered"),
       reviewed: (count, total) => count + " of " + total + " selected. Click to toggle. Drag a corner of a selected box to resize it, or drag elsewhere to add a box.",
@@ -53,6 +54,7 @@
       loading: "正在打开截图…",
       exampleLoading: "正在打开示例…",
       exampleFailed: "无法打开示例，请重试。",
+      handoffFailed: "无法打开从首页选中的截图，请在这里重新选择。",
       ready: "在图上拖出矩形，遮挡敏感区域。",
       masks: count => "已遮挡 " + count + " 处",
       reviewed: (count, total) => "已框选 " + count + " 处，共 " + total + " 个候选。点击虚线框切换选择，拖动已选框的角点可调整大小，拖动空白处可补画。",
@@ -85,12 +87,13 @@
       avatarTooLarge: "头像图片尺寸超出支持范围。",
     },
   };
-  const errors = new Set(["unsupported", "unreadable", "tooLarge", "exampleFailed", "copyFailed", "exportFailed", "ocrFailed", "scanPartial", "browser",
+  const errors = new Set(["unsupported", "unreadable", "tooLarge", "exampleFailed", "handoffFailed", "copyFailed", "exportFailed", "ocrFailed", "scanPartial", "browser",
     "avatarFormat", "avatarFailed", "avatarTooLarge"]);
 
   const choose = document.querySelector("#choose");
   const tryExample = document.querySelector("#try-example");
   const exampleImage = "assets/chat-example.png?v=1";
+  const { supportedFormat, take } = window.screenshotHandoff;
   const replace = document.querySelector("#replace");
   const scan = document.querySelector("#scan");
   const undo = document.querySelector("#undo");
@@ -1181,15 +1184,6 @@
     });
   }
 
-  async function supportedFormat(file) {
-    const first = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-    const png = first.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => first[i] === byte);
-    const jpeg = first[0] === 255 && first[1] === 216 && first[2] === 255;
-    const webp = String.fromCharCode(...first.slice(0, 4)) === "RIFF" &&
-      String.fromCharCode(...first.slice(8, 12)) === "WEBP";
-    return png || jpeg || webp;
-  }
-
   async function loadAvatar(choice, file) {
     if (!choice || choice.version !== loadVersion) return;
     const { speaker, version } = choice;
@@ -1554,5 +1548,28 @@
 
   choose.disabled = false;
   refresh();
-  if (new URLSearchParams(location.search).get("example") === "chat") openImage(exampleImage);
+  const handoffFragment = location.hash;
+  const handoffToken = new URLSearchParams(handoffFragment.slice(1)).get("handoff");
+  if (handoffToken !== null) {
+    openFromHomepage(handoffToken);
+  } else if (new URLSearchParams(location.search).get("example") === "chat") {
+    openImage(exampleImage);
+  }
+
+  async function openFromHomepage(token) {
+    const version = ++loadVersion;
+    notice = "loading";
+    refresh();
+    const image = await take(token).catch(() => null);
+    if (location.hash === handoffFragment) {
+      window.history.replaceState(window.history.state, "", location.pathname + location.search);
+    }
+    if (version !== loadVersion) return;
+    if (image) {
+      openImage(image);
+      return;
+    }
+    notice = "handoffFailed";
+    refresh();
+  }
 })();

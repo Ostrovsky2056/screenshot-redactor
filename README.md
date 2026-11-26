@@ -22,7 +22,7 @@ Text recognition covers common web links, email addresses, phone numbers, IDs, p
 
 ## On-device processing
 
-Images, recognized text, and mask regions are processed in browser memory. On the first scan, the browser loads the models and WebAssembly files from this site. Masks are rendered directly into the copied or exported PNG. Blur and lower opacity can leave details from the original visible.
+Images, recognized text, and mask regions are processed in browser memory. When a screenshot is selected on the lab homepage, the browser holds it temporarily on the device and removes the copy when the editor reads it. On the first scan, the browser loads the models and WebAssembly files from this site. Masks are rendered directly into the copied or exported PNG. Blur and lower opacity can leave details from the original visible.
 
 For mixed-language chat text and uncertain name boundaries, Tesseract.js reads selected lines again from crops of the original image. The editor aligns the name to the new character boxes when it can verify the range.
 
