@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-**Redact screenshots in your browser without uploading them.** Your screenshots and recognized text stay on your device.
+**Automatically redact screenshots in your browser without uploading them.**
 
 Open a screenshot to automatically select avatars, nicknames, and likely sensitive text. Review and resize the masks, then copy the redacted image or export a PNG at the original dimensions. [Open Screenshot Redactor](https://ostrovsky2056.github.io/screenshot-redactor/)
 
