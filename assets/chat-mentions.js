@@ -131,13 +131,14 @@
     return selected;
   }
 
-  function quoteGlyphs(line, run, canvas) {
+  function hanGlyphs(line, run, canvas) {
     const characters = [...line.text.slice(run.start, run.end).matchAll(/\S/gu)];
     if (characters.length < 4 || !han.test(characters[0][0]) ||
       characters.some(([value]) => !han.test(value) && !/^[,.!?:;，。！？：；、]$/u.test(value))) return null;
-    const x = Math.max(0, Math.floor(run.box.x0) - 1);
+    const padding = Math.max(1, Math.ceil(.36 * (run.box.x1 - run.box.x0) / characters.length));
+    const x = Math.max(0, Math.floor(run.box.x0) - padding);
     const y = Math.max(0, Math.floor(run.box.y0) - 1);
-    const width = Math.min(canvas.width, Math.ceil(run.box.x1) + 1) - x;
+    const width = Math.min(canvas.width, Math.ceil(run.box.x1) + padding) - x;
     const height = Math.min(canvas.height, Math.ceil(run.box.y1) + 1) - y;
     if (width < 20 || height < 8 || height > 160) return null;
     const { data } = canvas.getContext("2d").getImageData(x, y, width, height);
@@ -172,16 +173,18 @@
     if (advance < 6 || advance > (bottom - top) * 1.8) return null;
     // Use the ink-free gaps only when they fit the same character spacing across the line.
     const edges = [left];
+    let foundGaps = 0;
     for (let i = 1; i < characters.length; i++) {
       const ideal = left + i * advance;
       let gap = -1;
-      for (let col = Math.max(edges.at(-1) + 1, Math.ceil(ideal - .30 * advance));
+      for (let col = Math.max(left + 1, Math.ceil(ideal - .30 * advance));
         col < right && col <= ideal + .30 * advance; col++) {
         if (!columns[col] && (gap === -1 || Math.abs(col - ideal) < Math.abs(gap - ideal))) gap = col;
       }
-      if (gap < 0) return null;
-      edges.push(gap);
+      edges.push(gap >= 0 ? gap : null);
+      if (gap >= 0) foundGaps++;
     }
+    if (foundGaps < .66 * (characters.length - 1)) return null;
     edges.push(right);
     return { characters, edges, advance, x, y0: Math.max(y, y + top - 1), y1: Math.min(y + height, y + bottom + 1) };
   }
@@ -190,6 +193,7 @@
     const first = grid.characters.findIndex(({ index }) => index >= start);
     const last = grid.characters.findLastIndex(({ index }) => index < end);
     if (first < 0 || last < first) return original;
+    if (grid.edges[first] === null || grid.edges[last + 1] === null) return original;
     const x0 = grid.x + grid.edges[first];
     const x1 = grid.x + grid.edges[last + 1];
     if (Math.abs(x0 - original.x0) > .65 * grid.advance || Math.abs(x1 - original.x1) > .65 * grid.advance) return original;
@@ -209,7 +213,7 @@
         if (!inChat && participantNames.some(name => inside(name, run.box))) continue;
         const { text, offsets } = compact(line.text.slice(start, run.end));
         const matches = mentions(text, aliases, inChat);
-        const grid = quoted && canvas && matches.length ? quoteGlyphs(line, run, canvas) : null;
+        const grid = inChat && canvas && matches.length ? hanGlyphs(line, run, canvas) : null;
         for (const match of matches) {
           const from = start + offsets[match.start].start;
           const to = start + offsets[match.end - 1].end;

@@ -8,15 +8,15 @@
   <meta name="theme-color" content="#f4f1e9">
   <title data-zh-cn="截图脱敏 · AI 创作实验室">Screenshot Redactor · AI Creation Lab</title>
   <link rel="icon" type="image/png" sizes="128x128" href="assets/favicon.png">
-  <link rel="stylesheet" href="assets/site.css?v=3">
+  <link rel="stylesheet" href="assets/site.css?v=4">
   <script src="assets/i18n.js?v=2" defer></script>
   <script src="assets/ocr/tesseract.min.js" defer></script>
   <script src="assets/sensitive-text.js?v=3" defer></script>
   <script src="assets/chat-layout-model.js" defer></script>
-  <script src="assets/chat-layout.js?v=3" defer></script>
+  <script src="assets/chat-layout.js?v=4" defer></script>
   <script src="assets/visual-scan.js?v=6" defer></script>
-  <script src="assets/chat-mentions.js?v=1" defer></script>
-  <script src="assets/redactor.js?v=5" defer></script>
+  <script src="assets/chat-mentions.js?v=2" defer></script>
+  <script src="assets/redactor.js?v=6" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main" data-zh-cn="跳到工具">Skip to the tool</a>
@@ -93,7 +93,10 @@
       <div class="workspace" id="workspace">
         <div class="import-panel" id="import-panel">
           <div class="import-mark" aria-hidden="true"></div>
-          <button class="primary" type="button" id="choose" disabled data-zh-cn="选择截图">Choose a screenshot</button>
+          <div class="actions import-actions">
+            <button class="primary" type="button" id="choose" disabled data-zh-cn="选择截图">Choose a screenshot</button>
+            <button class="quiet" type="button" id="try-example" disabled data-zh-cn="试用示例">Try an example</button>
+          </div>
           <p data-zh-cn="也可以拖入文件，或直接粘贴截图。">You can also drop a file or paste a screenshot.</p>
           <p class="formats">PNG · JPEG · WebP</p>
           <noscript><p>Enable JavaScript to edit images in your browser. 请启用 JavaScript 以在浏览器中编辑图片。</p></noscript>

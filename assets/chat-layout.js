@@ -238,6 +238,27 @@
       chain.push(column);
     }
     const box = bounds(chain);
+    const rows = new Uint16Array(height(box));
+    for (let y = box.y0; y < box.y1; y++) {
+      for (let x = box.x0; x < box.x1; x++) {
+        if (distance(pixels.data, pixelIndex(pixels, x, y), tone) > 46) rows[y - box.y0]++;
+      }
+    }
+    // Keep the main line of glyphs across sparse rows, without joining an isolated rule.
+    const minimum = Math.max(2, Math.ceil(Math.max(...rows) * .14));
+    let top = 0, bottom = 0, start = 0;
+    let lastInk = -Infinity;
+    for (let row = 0; row < rows.length; row++) {
+      if (rows[row] < minimum) continue;
+      if (row - lastInk > 3) start = row;
+      if (row + 1 - start > bottom - top) {
+        top = start;
+        bottom = row + 1;
+      }
+      lastInk = row;
+    }
+    box.y1 = box.y0 + bottom;
+    box.y0 += top;
     return width(box) > size * .15 && height(box) > size * .12 && height(box) < size * .58 ? box : null;
   }
 
@@ -259,13 +280,19 @@
       const box = bounds(spans.map(span => span.box));
       const offset = Math.abs((side === "left" ? box.x0 : box.x1) - edge);
       if (offset < size * .47 && height(box) >= size * .10 && height(box) <= size * .62) {
-        choices.push({ box, offset, label: text });
+        choices.push({ box, offset, label: text, line, start: spans[0].start, end: spans.at(-1).end });
       }
     }
     choices.sort((a, b) => a.offset - b.offset);
-    if (choices.length) return choices[0];
-    const box = pixelNickname(pixels, tone, area, edge, side, size);
-    return box ? { box, label: "" } : null;
+    const best = choices[0];
+    const ink = pixelNickname(pixels, tone, area, edge, side, size);
+    if (!best) return ink ? { box: ink, label: "" } : null;
+    if (!ink) return best;
+    const commonWidth = Math.min(ink.x1, best.box.x1) - Math.max(ink.x0, best.box.x0);
+    // OCR can extend a nickname box into empty space above the bubble.
+    const sameName = commonWidth >= .8 * Math.max(width(ink), width(best.box)) &&
+      overlap(ink, best.box) >= .75 && height(ink) <= height(best.box) + 2;
+    return sameName ? { ...best, box: ink } : best;
   }
 
   function quotes(shapes, lines, pairs) {

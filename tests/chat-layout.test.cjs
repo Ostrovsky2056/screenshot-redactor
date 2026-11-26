@@ -102,6 +102,22 @@ test("grey nickname can be detected from its pixels when OCR misses the line", (
   assert(covers(result.associatedNames, missedName));
 });
 
+test("makes a nickname box follow the glyphs when OCR includes extra vertical space", () => {
+  const pic = frame();
+  pic.avatar(22, 30, [216, 170, 122]);
+  const expected = pic.label("小松饼", 89, 37);
+  pic.fill(90, 30, 33, 1, [125, 130, 135]);
+  pic.fill(90, 34, 9, 2, [125, 130, 135]);
+  const nickname = pic.lines[0];
+  nickname.box = { ...nickname.box, y0: 30, y1: 57 };
+  nickname.spans = nickname.spans.map(span => ({ ...span, box: { ...span.box, y0: 30, y1: 57 } }));
+  pic.fill(80, 58, 240, 56, [230, 231, 235], 9);
+  pic.label("Message", 105, 78);
+  const result = findRegions(pic, pic.lines, model);
+  assert.deepEqual(result.associatedNames, [{ ...expected, y0: 34 }]);
+  assert.equal(result.profiles[0].name.line, nickname);
+});
+
 test("a central illustrated icon beside a flat widget does not become a chat avatar", () => {
   const pic = frame();
   pic.avatar(260, 110, [143, 207, 167]);

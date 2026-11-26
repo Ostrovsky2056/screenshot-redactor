@@ -6,6 +6,12 @@
 
 打开一张截图，工具会自动框选头像和疑似敏感文字。核对框选，按需调整，即可导出脱敏 PNG。[在线使用](https://ostrovsky2056.github.io/screenshot-redactor/)
 
+## 试用示例
+
+这段虚构聊天展示了头像、昵称和邮箱从自动框选到脱敏导出的效果。[一键试用示例](https://ostrovsky2056.github.io/screenshot-redactor/?example=chat)
+
+![聊天原图、自动框选和带发言人代号的脱敏导出效果](docs/chat-example.zh-CN.webp)
+
 ## 使用方法
 
 1. 选择、拖入或粘贴一张 PNG、JPEG 或 WebP 截图。编辑器会查找头像、人脸和中英文敏感文字。

@@ -58,8 +58,7 @@ test("keeps adjacent text selectable without adding a second region over an avat
   assert.deepEqual(runs(line("X 松饼", 28, true), [joinedAvatar]), []);
 });
 
-test("uses the gaps between Han glyphs when quote OCR boxes drift into adjacent words", () => {
-  const text = "松饼:麻烦何姐回复";
+function driftingHanLine(text, name) {
   const width = 220, height = 60;
   const data = new Uint8ClampedArray(width * height * 4).fill(247);
   for (const [i, value] of [...text].entries()) {
@@ -71,11 +70,12 @@ test("uses the gaps between Han glyphs when quote OCR boxes drift into adjacent 
     }
   }
   const box = { x0: 12, y0: 8, x1: 191, y1: 45 };
+  const first = text.indexOf(name);
   const spans = [...text].map((_, i) => {
-    const x0 = box.x0 + i * 20 + (i === 5 || i === 6 ? 8 : 0);
+    const x0 = box.x0 + i * 20 + (i >= first && i < first + name.length ? 8 : 0);
     return { start: i, end: i + 1, box: { ...box, x0, x1: x0 + 15 } };
   });
-  const quote = { text, spans, box };
+  const line = { text, spans, box };
   const canvas = { width, height, getContext: () => ({ getImageData(x, y, w, h) {
     const crop = new Uint8ClampedArray(w * h * 4);
     for (let row = 0; row < h; row++) {
@@ -84,8 +84,21 @@ test("uses the gaps between Han glyphs when quote OCR boxes drift into adjacent 
     }
     return { data: crop };
   } }) };
-  const [name] = findRegions([quote], { ...layout, quoteBodies: [{ line: quote, start: 3 }] }, canvas);
+  return { line, canvas };
+}
+
+test("uses the gaps between Han glyphs when quote OCR boxes drift into adjacent words", () => {
+  const { line, canvas } = driftingHanLine("松饼:麻烦何姐回复", "何姐");
+  const [name] = findRegions([line], { ...layout, quoteBodies: [{ line, start: 3 }] }, canvas);
   assert(name.x0 >= 109 && name.x0 <= 114);
   assert(name.x1 >= 149 && name.x1 <= 154);
+  assert.deepEqual([name.y0, name.y1], [17, 37]);
+});
+
+test("stops an inline nickname box before the next Han glyph in a chat message", () => {
+  const { line, canvas } = driftingHanLine("林哥现在到了", "林哥");
+  const [name] = findRegions([line], layout, canvas);
+  assert.equal(name.x0, 14);
+  assert(name.x1 >= 49 && name.x1 <= 54);
   assert.deepEqual([name.y0, name.y1], [17, 37]);
 });

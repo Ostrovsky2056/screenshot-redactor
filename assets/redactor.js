@@ -7,6 +7,8 @@
   const messages = {
     en: {
       loading: "Opening the screenshot…",
+      exampleLoading: "Opening the example…",
+      exampleFailed: "Couldn’t open the example. Try again.",
       ready: "Drag on the image to cover a region.",
       masks: count => count + (count === 1 ? " region covered" : " regions covered"),
       reviewed: (count, total) => count + " of " + total + " selected. Click a dashed box to toggle it, or drag to add one.",
@@ -26,6 +28,8 @@
     },
     "zh-CN": {
       loading: "正在打开截图…",
+      exampleLoading: "正在打开示例…",
+      exampleFailed: "无法打开示例，请重试。",
       ready: "在图上拖出矩形，遮挡敏感区域。",
       masks: count => "已遮挡 " + count + " 处",
       reviewed: (count, total) => "已框选 " + count + " 处，共 " + total + " 个候选。点击虚线框切换选择，拖动可补画。",
@@ -44,9 +48,11 @@
       browser: "当前浏览器无法运行图片编辑器。",
     },
   };
-  const errors = new Set(["unsupported", "unreadable", "tooLarge", "exportFailed", "ocrFailed", "scanPartial", "browser"]);
+  const errors = new Set(["unsupported", "unreadable", "tooLarge", "exampleFailed", "exportFailed", "ocrFailed", "scanPartial", "browser"]);
 
   const choose = document.querySelector("#choose");
+  const tryExample = document.querySelector("#try-example");
+  const exampleImage = "assets/chat-example.png?v=1";
   const replace = document.querySelector("#replace");
   const scan = document.querySelector("#scan");
   const undo = document.querySelector("#undo");
@@ -89,7 +95,9 @@
     const regions = masks();
     const count = regions.filter(region => region.enabled !== false).length;
     const hasSpeakers = regions.some(region => region.speaker !== undefined);
-    const message = notice === "loading" ? notice : scanStatus || notice;
+    const opening = notice === "loading" || notice === "exampleLoading";
+    const message = opening ? notice : scanStatus || notice;
+    if (tryExample) tryExample.disabled = choose.disabled || opening;
     toolbar.hidden = !bitmap;
     styleBar.hidden = !bitmap;
     speakerStyle.hidden = !hasSpeakers;
@@ -304,10 +312,12 @@
     for (const box of visual.associatedNames) add(box, "name", 2);
     for (const box of ChatMentions.findRegions(lines, visual, sample)) add(box, "name", 0);
     const quoteStarts = new Map(visual.quoteBodies.map(({ line, start }) => [line, start]));
+    const nicknames = visual.profiles.map(profile => profile.name).filter(name => name?.line);
     for (const line of lines) {
       const quoteStart = quoteStarts.get(line) ?? 0;
       for (const { box, start, end } of SensitiveText.runs(line, visual.avatars)) {
         if (end <= quoteStart) continue;
+        if (nicknames.some(name => name.line === line && start >= name.start && end <= name.end)) continue;
         const textBox = start < quoteStart ? SensitiveText.boxForRange(line, quoteStart, end) : box;
         if (textBox) add(textBox, "text", 0, false);
       }
@@ -391,15 +401,24 @@
     return png || jpeg || webp;
   }
 
-  async function openImage(file) {
+  async function openImage(source) {
+    const example = source === exampleImage;
+    const moveFocus = example && tryExample && document.activeElement === tryExample;
     const version = ++loadVersion;
-    notice = "loading";
+    notice = example ? "exampleLoading" : "loading";
     refresh();
     try {
+      let file = source;
+      if (example) {
+        const response = await fetch(exampleImage);
+        if (!response.ok) throw new Error("Example image unavailable");
+        file = await response.blob();
+        if (version !== loadVersion) return;
+      }
       const supported = await supportedFormat(file);
       if (version !== loadVersion) return;
       if (!supported) {
-        notice = "unsupported";
+        notice = example ? "exampleFailed" : "unsupported";
         return;
       }
       const image = await createImageBitmap(file);
@@ -422,8 +441,9 @@
       preview.height = Math.max(1, Math.round(image.height * scale));
       edited();
       scanCurrent();
+      if (moveFocus) replace.focus({ preventScroll: true });
     } catch {
-      if (version === loadVersion) notice = "unreadable";
+      if (version === loadVersion) notice = example ? "exampleFailed" : "unreadable";
     } finally {
       if (version === loadVersion) refresh();
     }
@@ -496,6 +516,7 @@
   preview.addEventListener("pointerleave", () => preview.removeAttribute("data-candidate"));
 
   choose.addEventListener("click", () => input.click());
+  tryExample?.addEventListener("click", () => openImage(exampleImage));
   replace.addEventListener("click", () => input.click());
   input.addEventListener("change", () => {
     const file = input.files[0];
@@ -596,4 +617,5 @@
 
   choose.disabled = false;
   refresh();
+  if (new URLSearchParams(location.search).get("example") === "chat") openImage(exampleImage);
 })();

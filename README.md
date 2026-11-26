@@ -6,6 +6,12 @@
 
 Open a screenshot and the editor automatically selects avatars and likely sensitive text. Review the boxes, adjust them if needed, and export a PNG. [Open Screenshot Redactor](https://ostrovsky2056.github.io/screenshot-redactor/)
 
+## Example
+
+See how the editor selects avatars, nicknames, and an email address in a fictional chat. [Try this example](https://ostrovsky2056.github.io/screenshot-redactor/?example=chat)
+
+![Original chat, automatic selections, and the exported PNG with speaker labels](docs/chat-example.en.webp)
+
 ## Using the editor
 
 1. Choose, drop, or paste a PNG, JPEG, or WebP screenshot. The editor looks for avatars, faces, and sensitive text in English and Simplified Chinese.

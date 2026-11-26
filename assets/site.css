@@ -348,6 +348,9 @@ main { padding-block-end: clamp(2rem, 6vw, 5rem); }
   text-align: center;
 }
 
+.import-actions { justify-content: center; }
+.import-actions .quiet { border-color: var(--line); }
+
 .import-mark {
   position: relative;
   width: 3.6rem;
